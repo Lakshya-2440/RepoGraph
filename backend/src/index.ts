@@ -17,7 +17,6 @@ import type {
   GoogleAuthRequest,
   RequestPasswordResetRequest,
   ResetPasswordRequest,
-  RegisterResponse,
   RepoAiInsightsResponse,
   RepoAiCodeOriginResponse,
   RepoChatRequest,
@@ -104,10 +103,8 @@ app.post("/api/auth/register", async (request, response) => {
 
   try {
     const user = await registerUser(`${body.email ?? ""}`, `${body.password ?? ""}`);
-    response.status(201).json({
-      user,
-      message: "Account created. Please verify your email before logging in."
-    } satisfies RegisterResponse);
+    const token = issueAuthToken(user);
+    response.status(201).json({ token, user } satisfies AuthResponse);
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "Registration failed." });
   }

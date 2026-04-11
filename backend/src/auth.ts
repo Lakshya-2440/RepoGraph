@@ -9,7 +9,6 @@ import { loadEnvironment } from "./config/env.js";
 import { getDbPool } from "./db/index.js";
 
 const PASSWORD_MIN_LENGTH = 8;
-const EMAIL_VERIFY_TOKEN_TTL_HOURS = 24;
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = 30;
 const LOGIN_WINDOW_MINUTES = 15;
 const LOGIN_MAX_ATTEMPTS = 5;
@@ -44,8 +43,8 @@ export async function registerUser(emailRaw: string, password: string): Promise<
 
   const result = await db.query<{ id: string; email: string; created_at: string }>(
     `
-      INSERT INTO users(email, password_hash)
-      VALUES($1, $2)
+      INSERT INTO users(email, password_hash, email_verified_at)
+      VALUES($1, $2, now())
       RETURNING id, email, created_at
     `,
     [email, passwordHash]
@@ -55,13 +54,6 @@ export async function registerUser(emailRaw: string, password: string): Promise<
   if (!row) {
     throw new Error("Failed to create user.");
   }
-
-  await createAndDispatchAuthToken({
-    userId: Number(row.id),
-    email: row.email,
-    purpose: "verify_email",
-    ttlMs: EMAIL_VERIFY_TOKEN_TTL_HOURS * 60 * 60 * 1000
-  });
 
   return {
     id: Number(row.id),
@@ -97,10 +89,6 @@ export async function loginUser(emailRaw: string, password: string, attemptKey: 
   if (!matches) {
     await registerFailedLoginAttempt(attemptKey);
     throw new Error("Invalid email or password.");
-  }
-
-  if (shouldRequireEmailVerification() && !user.email_verified_at) {
-    throw new Error("Email is not verified. Please check your inbox for the verification link.");
   }
 
   await clearLoginAttempts(attemptKey);
@@ -463,16 +451,6 @@ async function dispatchAuthEmail(email: string, purpose: "verify_email" | "passw
 
 function hashToken(rawToken: string): string {
   return createHash("sha256").update(rawToken).digest("hex");
-}
-
-function shouldRequireEmailVerification(): boolean {
-  loadEnvironment(true);
-  const value = process.env.REQUIRE_EMAIL_VERIFICATION?.trim().toLowerCase();
-  if (!value) {
-    return true;
-  }
-
-  return !["0", "false", "no"].includes(value);
 }
 
 async function assertLoginNotRateLimited(attemptKey: string): Promise<void> {

@@ -242,11 +242,6 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface RegisterResponse {
-  user: AuthUser;
-  message: string;
-}
-
 export interface VerifyEmailRequest {
   token: string;
 }

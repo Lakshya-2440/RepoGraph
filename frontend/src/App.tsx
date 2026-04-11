@@ -57,6 +57,7 @@ const VIEW_LABELS: Record<AppView, string> = {
 };
 
 const DEFAULT_SOURCE = "";
+const GOOGLE_GSI_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
 
 export function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -68,6 +69,7 @@ export function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
+  const [googleButtonVisible, setGoogleButtonVisible] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [source, setSource] = useState(DEFAULT_SOURCE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -132,83 +134,133 @@ export function App() {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
     if (!clientId) {
       setGoogleAuthError("Google sign-in is not configured for this environment.");
-      return;
-    }
-
-    if (!googleButtonRef.current) {
+      setGoogleButtonVisible(false);
       return;
     }
 
     setGoogleAuthError(null);
+    setGoogleButtonVisible(false);
     let cancelled = false;
 
-    const renderGoogleButton = () => {
-      if (cancelled || !window.google?.accounts?.id || !googleButtonRef.current) {
+    const tryRenderGoogleButton = (): boolean => {
+      const mountPoint = googleButtonRef.current;
+      const googleId = window.google?.accounts?.id;
+
+      if (!mountPoint || !googleId) {
+        return false;
+      }
+
+      try {
+        mountPoint.innerHTML = "";
+        googleId.initialize({
+          client_id: clientId,
+          callback: ({ credential }) => {
+            if (!credential) {
+              setGoogleAuthError("Google did not return a valid credential.");
+              setAuthError("Google authentication failed.");
+              return;
+            }
+
+            setAuthSubmitting(true);
+            setAuthError(null);
+            setAuthInfo(null);
+
+            void loginWithGoogle({ idToken: credential })
+              .then((result) => {
+                if (!cancelled) {
+                  setAuthUser(result.user);
+                }
+              })
+              .catch((caughtError) => {
+                if (!cancelled) {
+                  setAuthError(caughtError instanceof Error ? caughtError.message : "Google sign-in failed.");
+                }
+              })
+              .finally(() => {
+                if (!cancelled) {
+                  setAuthSubmitting(false);
+                }
+              });
+          }
+        });
+
+        googleId.renderButton(mountPoint, {
+          theme: "outline",
+          size: "large",
+          width: 320
+        });
+
+        const hasButton = mountPoint.childElementCount > 0;
+        setGoogleButtonVisible(hasButton);
+        setGoogleAuthError(
+          hasButton ? null : "Google button did not render. Check OAuth Authorized JavaScript origins for this exact URL."
+        );
+        return hasButton;
+      } catch {
+        setGoogleAuthError("Google sign-in failed to initialize. Verify Google OAuth client origins and browser privacy settings.");
+        setGoogleButtonVisible(false);
+        return false;
+      }
+    };
+
+    const existingScript = document.querySelector(`script[src=\"${GOOGLE_GSI_SCRIPT_SRC}\"]`) as HTMLScriptElement | null;
+    let sdkPollInterval: number | null = null;
+    let sdkTimeout: number | null = null;
+
+    if (!existingScript && !window.google?.accounts?.id) {
+      const script = document.createElement("script");
+      script.src = GOOGLE_GSI_SCRIPT_SRC;
+      script.async = true;
+      script.defer = true;
+      script.onerror = () => {
         if (!cancelled) {
-          setGoogleAuthError("Google sign-in SDK could not be loaded.");
+          setGoogleAuthError("Google sign-in is blocked in this browser. Disable blockers and retry.");
+          setGoogleButtonVisible(false);
         }
+      };
+      document.head.appendChild(script);
+    }
+
+    sdkPollInterval = window.setInterval(() => {
+      if (cancelled) {
         return;
       }
 
-      googleButtonRef.current.innerHTML = "";
-      window.google.accounts.id.initialize({
-        client_id: clientId,
-        callback: ({ credential }) => {
-          if (!credential) {
-            setGoogleAuthError("Google did not return a valid credential.");
-            setAuthError("Google authentication failed.");
-            return;
-          }
-
-          setAuthSubmitting(true);
-          setAuthError(null);
-          setAuthInfo(null);
-
-          void loginWithGoogle({ idToken: credential })
-            .then((result) => {
-              if (!cancelled) {
-                setAuthUser(result.user);
-              }
-            })
-            .catch((caughtError) => {
-              if (!cancelled) {
-                setAuthError(caughtError instanceof Error ? caughtError.message : "Google sign-in failed.");
-              }
-            })
-            .finally(() => {
-              if (!cancelled) {
-                setAuthSubmitting(false);
-              }
-            });
+      if (tryRenderGoogleButton()) {
+        if (sdkPollInterval !== null) {
+          window.clearInterval(sdkPollInterval);
+          sdkPollInterval = null;
         }
-      });
-      window.google.accounts.id.renderButton(googleButtonRef.current, {
-        theme: "outline",
-        size: "large",
-        width: 320
-      });
-      setGoogleAuthError(null);
-    };
-
-    if (window.google?.accounts?.id) {
-      renderGoogleButton();
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://accounts.google.com/gsi/client";
-    script.async = true;
-    script.defer = true;
-    script.onload = renderGoogleButton;
-    script.onerror = () => {
-      if (!cancelled) {
-        setGoogleAuthError("Google sign-in is blocked in this browser. Disable blockers and retry.");
       }
-    };
-    document.head.appendChild(script);
+    }, 100);
+
+    sdkTimeout = window.setTimeout(() => {
+      if (cancelled) {
+        return;
+      }
+
+      if (sdkPollInterval !== null) {
+        window.clearInterval(sdkPollInterval);
+        sdkPollInterval = null;
+      }
+
+      if (!window.google?.accounts?.id) {
+        setGoogleAuthError("Google sign-in SDK did not finish loading. Disable blockers/privacy shields and reload.");
+        setGoogleButtonVisible(false);
+      } else if (!tryRenderGoogleButton()) {
+        setGoogleAuthError("Google button did not render. Check OAuth Authorized JavaScript origins for this exact URL.");
+        setGoogleButtonVisible(false);
+      }
+    }, 5000);
 
     return () => {
       cancelled = true;
+      if (sdkPollInterval !== null) {
+        window.clearInterval(sdkPollInterval);
+      }
+      if (sdkTimeout !== null) {
+        window.clearTimeout(sdkTimeout);
+      }
     };
   }, [authUser]);
 
@@ -427,6 +479,13 @@ export function App() {
       : analysis
         ? `${analysis.summary.counts.nodes} nodes loaded from ${analysis.summary.repoName}.`
         : "Ready for the first analysis.";
+  const userInitials = (authUser?.email ?? "")
+    .split("@")[0]
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "U";
 
   const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -441,7 +500,8 @@ export function App() {
     try {
       if (authMode === "register") {
         const result = await register({ email: authEmail.trim(), password: authPassword });
-        setAuthInfo(result.message);
+        setAuthUser(result.user);
+        setAuthInfo(null);
       } else {
         const result = await login({ email: authEmail.trim(), password: authPassword });
         setAuthUser(result.user);
@@ -488,6 +548,9 @@ export function App() {
           <div className="auth-google-wrap">
             <div ref={googleButtonRef} />
           </div>
+          {!googleButtonVisible && !googleAuthError && (
+            <p className="auth-info">Preparing Google sign-in...</p>
+          )}
           {googleAuthError && <p className="auth-error">{googleAuthError}</p>}
 
           <div className="auth-divider" aria-hidden="true">or use email</div>
@@ -546,6 +609,40 @@ export function App() {
 
   return (
     <main className="app-shell">
+      <header className="panel top-nav">
+        <button type="button" className="top-nav-brand" onClick={navigateToLanding}>
+          <span className="top-nav-logo-mark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="top-nav-logo-text">RepoGraph</span>
+        </button>
+
+        <nav className="top-nav-links" aria-label="Primary">
+          {(Object.keys(VIEW_LABELS) as AppView[]).map((view) => (
+            <button
+              key={view}
+              type="button"
+              className={`top-nav-link ${activeView === view ? "top-nav-link-active" : ""}`}
+              onClick={() => setActiveView(view)}
+            >
+              {VIEW_LABELS[view]}
+            </button>
+          ))}
+        </nav>
+
+        <div className="top-nav-user">
+          <button type="button" className="top-nav-profile" title={authUser.email}>
+            <span className="top-nav-avatar">{userInitials}</span>
+            <span className="top-nav-email">{authUser.email}</span>
+          </button>
+          <button type="button" className="top-nav-logout" onClick={handleLogout}>
+            Logout
+          </button>
+        </div>
+      </header>
+
       {showPalette && (
         <CommandPalette
           analysis={analysis}
@@ -576,27 +673,7 @@ export function App() {
             onOpenPalette={() => setShowPalette(true)}
           />
 
-          <div className="session-banner">
-            <span>Signed in as {authUser.email}</span>
-            <button type="button" className="session-logout" onClick={handleLogout}>
-              Logout
-            </button>
-          </div>
-
           <div className="banner">{statusMessage}</div>
-
-          <div className="view-tabs">
-            {(Object.keys(VIEW_LABELS) as AppView[]).map((view) => (
-              <button
-                key={view}
-                type="button"
-                className={`view-tab ${activeView === view ? "view-tab-active" : ""}`}
-                onClick={() => setActiveView(view)}
-              >
-                {VIEW_LABELS[view]}
-              </button>
-            ))}
-          </div>
 
           {activeView === "graph" && (
             <div ref={graphSectionRef}>
