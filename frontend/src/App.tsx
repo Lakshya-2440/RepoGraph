@@ -1,6 +1,6 @@
-import { startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
+import { FormEvent, startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
 
-import type { AnalysisResult, NodeDetailResponse, RepoAiInsightsResponse, SearchResult } from "@shared/index";
+import type { AnalysisResult, AuthUser, NodeDetailResponse, RepoAiInsightsResponse, SearchResult } from "@shared/index";
 
 import { CommandPalette } from "./components/CommandPalette";
 import { ContributorView } from "./components/ContributorView";
@@ -13,8 +13,37 @@ import { NodePanel } from "./components/NodePanel";
 import { RepoChatbot } from "./components/RepoChatbot";
 import { StatsView } from "./components/StatsView";
 import { SummarySidebar } from "./components/SummarySidebar";
-import { analyzeSource, fetchAiInsights, fetchCurrentAnalysis, fetchHealth, fetchNodeDetails, searchNodes } from "./lib/api";
+import {
+  analyzeSource,
+  clearAuthToken,
+  fetchAiInsights,
+  fetchCurrentAnalysis,
+  fetchHealth,
+  fetchMe,
+  fetchNodeDetails,
+  getAuthToken,
+  login,
+  loginWithGoogle,
+  register,
+  searchNodes
+} from "./lib/api";
 import { formatDate } from "./lib/format";
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (options: {
+            client_id: string;
+            callback: (response: { credential?: string }) => void;
+          }) => void;
+          renderButton: (parent: HTMLElement, options: { theme?: string; size?: string; width?: number }) => void;
+        };
+      };
+    };
+  }
+}
 
 type AppView = "graph" | "explorer" | "stats" | "insights" | "dependencies" | "contributors";
 
@@ -30,6 +59,15 @@ const VIEW_LABELS: Record<AppView, string> = {
 const DEFAULT_SOURCE = "";
 
 export function App() {
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authInfo, setAuthInfo] = useState<string | null>(null);
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [source, setSource] = useState(DEFAULT_SOURCE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -49,11 +87,137 @@ export function App() {
   const [prefetchedAiInsightsError, setPrefetchedAiInsightsError] = useState<string | null>(null);
   const mainColumnRef = useRef<HTMLElement | null>(null);
   const graphSectionRef = useRef<HTMLDivElement | null>(null);
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const generatedLabel = analysis ? formatDate(analysis.summary.generatedAt) : undefined;
 
   useEffect(() => {
+    let cancelled = false;
+
+    const bootstrapAuth = async () => {
+      const token = getAuthToken();
+      if (!token) {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+        return;
+      }
+
+      try {
+        const user = await fetchMe();
+        if (!cancelled) {
+          setAuthUser(user);
+        }
+      } catch {
+        clearAuthToken();
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      }
+    };
+
+    void bootstrapAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (authUser) {
+      return;
+    }
+
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
+    if (!clientId) {
+      setGoogleAuthError("Google sign-in is not configured for this environment.");
+      return;
+    }
+
+    if (!googleButtonRef.current) {
+      return;
+    }
+
+    setGoogleAuthError(null);
+    let cancelled = false;
+
+    const renderGoogleButton = () => {
+      if (cancelled || !window.google?.accounts?.id || !googleButtonRef.current) {
+        if (!cancelled) {
+          setGoogleAuthError("Google sign-in SDK could not be loaded.");
+        }
+        return;
+      }
+
+      googleButtonRef.current.innerHTML = "";
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: ({ credential }) => {
+          if (!credential) {
+            setGoogleAuthError("Google did not return a valid credential.");
+            setAuthError("Google authentication failed.");
+            return;
+          }
+
+          setAuthSubmitting(true);
+          setAuthError(null);
+          setAuthInfo(null);
+
+          void loginWithGoogle({ idToken: credential })
+            .then((result) => {
+              if (!cancelled) {
+                setAuthUser(result.user);
+              }
+            })
+            .catch((caughtError) => {
+              if (!cancelled) {
+                setAuthError(caughtError instanceof Error ? caughtError.message : "Google sign-in failed.");
+              }
+            })
+            .finally(() => {
+              if (!cancelled) {
+                setAuthSubmitting(false);
+              }
+            });
+        }
+      });
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "outline",
+        size: "large",
+        width: 320
+      });
+      setGoogleAuthError(null);
+    };
+
+    if (window.google?.accounts?.id) {
+      renderGoogleButton();
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.onload = renderGoogleButton;
+    script.onerror = () => {
+      if (!cancelled) {
+        setGoogleAuthError("Google sign-in is blocked in this browser. Disable blockers and retry.");
+      }
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser) {
+      setBooting(false);
+      return;
+    }
+
     let cancelled = false;
 
     const bootstrap = async () => {
@@ -89,7 +253,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     if (!selectedNodeId) {
@@ -264,6 +428,122 @@ export function App() {
         ? `${analysis.summary.counts.nodes} nodes loaded from ${analysis.summary.repoName}.`
         : "Ready for the first analysis.";
 
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthError("Email and password are required.");
+      return;
+    }
+
+    setAuthSubmitting(true);
+    setAuthError(null);
+
+    try {
+      if (authMode === "register") {
+        const result = await register({ email: authEmail.trim(), password: authPassword });
+        setAuthInfo(result.message);
+      } else {
+        const result = await login({ email: authEmail.trim(), password: authPassword });
+        setAuthUser(result.user);
+        setAuthInfo(null);
+      }
+      setAuthPassword("");
+    } catch (caughtError) {
+      setAuthError(caughtError instanceof Error ? caughtError.message : "Authentication failed.");
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleLogout = () => {
+    clearAuthToken();
+    setAuthUser(null);
+    setAnalysis(null);
+    setNodeDetails(null);
+    setSelectedNodeId(null);
+    setSearchQuery("");
+    setSearchResults([]);
+    setError(null);
+  };
+
+  if (authLoading) {
+    return (
+      <main className="app-shell">
+        <section className="auth-shell panel">
+          <h1>RepoGraph</h1>
+          <p className="auth-subtitle">Checking session...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <main className="app-shell auth-page">
+        <section className="auth-shell panel">
+          <p className="panel-title">Secure Access</p>
+          <h1>{authMode === "register" ? "Create your workspace account" : "Sign in to RepoGraph"}</h1>
+          <p className="auth-subtitle">Your projects and AI activity are stored per account.</p>
+
+          <div className="auth-google-wrap">
+            <div ref={googleButtonRef} />
+          </div>
+          {googleAuthError && <p className="auth-error">{googleAuthError}</p>}
+
+          <div className="auth-divider" aria-hidden="true">or use email</div>
+
+          <form className="auth-form" onSubmit={handleAuthSubmit}>
+            <label>
+              Email
+              <input
+                type="email"
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                placeholder="you@company.com"
+                autoComplete="email"
+                required
+              />
+            </label>
+
+            <label>
+              Password
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+                placeholder="At least 8 characters"
+                autoComplete={authMode === "register" ? "new-password" : "current-password"}
+                minLength={8}
+                required
+              />
+            </label>
+
+            {authInfo && <p className="auth-info">{authInfo}</p>}
+            {authError && <p className="auth-error">{authError}</p>}
+
+            <button type="submit" className="auth-submit" disabled={authSubmitting}>
+              {authSubmitting ? "Working..." : authMode === "register" ? "Create account" : "Sign in"}
+            </button>
+          </form>
+
+          <div className="auth-switcher">
+            <span>{authMode === "register" ? "Already have an account?" : "Need an account?"}</span>
+            <button
+              type="button"
+              className="auth-switch"
+              onClick={() => {
+                setAuthError(null);
+                setAuthMode((current) => (current === "login" ? "register" : "login"));
+              }}
+            >
+              {authMode === "register" ? "Sign in" : "Create one"}
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       {showPalette && (
@@ -295,6 +575,13 @@ export function App() {
             onNavigateHome={navigateToLanding}
             onOpenPalette={() => setShowPalette(true)}
           />
+
+          <div className="session-banner">
+            <span>Signed in as {authUser.email}</span>
+            <button type="button" className="session-logout" onClick={handleLogout}>
+              Logout
+            </button>
+          </div>
 
           <div className="banner">{statusMessage}</div>
 
