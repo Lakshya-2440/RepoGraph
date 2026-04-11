@@ -1,0 +1,41 @@
+{
+  "name": "github-knowledge-graph",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c cyan,yellow \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "tsx watch backend/src/index.ts",
+    "dev:frontend": "vite --config frontend/vite.config.ts",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "tsup backend/src/index.ts --format esm --out-dir backend/dist --clean",
+    "build:frontend": "vite build --config frontend/vite.config.ts",
+    "start": "node backend/dist/index.js",
+    "typecheck": "tsc --noEmit -p backend/tsconfig.json && tsc --noEmit -p frontend/tsconfig.json"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.28.0",
+    "@babel/traverse": "^7.28.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.1",
+    "express": "^4.21.2",
+    "fast-glob": "^3.3.3",
+    "ignore": "^7.0.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-force-graph-2d": "^1.27.0"
+  },
+  "devDependencies": {
+    "@types/babel__traverse": "^7.28.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.6.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.10"
+  }
+}
