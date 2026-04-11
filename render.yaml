@@ -2,7 +2,7 @@ services:
   - type: web
     name: repograph-backend
     runtime: node
-    plan: starter
+    plan: free
     region: oregon
     branch: main
     buildCommand: npm ci && npm run build:backend
