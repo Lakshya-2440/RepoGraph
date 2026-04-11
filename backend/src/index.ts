@@ -58,13 +58,27 @@ const corsOrigins = (process.env.CORS_ORIGIN ?? "")
   .map((value) => value.trim())
   .filter(Boolean);
 
+const isLoopbackOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+
 await loadStoredAnalysis();
 await initializeDatabase();
 
 app.set("trust proxy", 1);
 app.use(
   cors({
-    origin: corsOrigins.length === 0 ? true : corsOrigins,
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+
+      if (corsOrigins.length === 0 || corsOrigins.includes(origin) || isLoopbackOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(null, false);
+    },
     credentials: true
   })
 );
