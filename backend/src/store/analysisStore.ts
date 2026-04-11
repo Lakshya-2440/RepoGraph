@@ -1,48 +1,73 @@
-import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
 import type { AnalysisResult } from "../../../shared/src/index.js";
+import { getDbPool } from "../db/index.js";
 
-const DATA_FILE = path.join(os.tmpdir(), "github-knowledge-graph-cache", "current-analysis.json");
-
-let currentAnalysis: AnalysisResult | null = null;
-let runningAnalysis: Promise<AnalysisResult> | null = null;
+const currentAnalysisByUser = new Map<number, AnalysisResult>();
+const runningAnalysisByUser = new Map<number, Promise<AnalysisResult>>();
 
 export async function loadStoredAnalysis(): Promise<void> {
-  try {
-    const raw = await fs.readFile(DATA_FILE, "utf8");
-    currentAnalysis = JSON.parse(raw) as AnalysisResult;
-  } catch {
-    currentAnalysis = null;
+  // No-op: analyses are loaded per-user on demand from DB.
+}
+
+export async function getCurrentAnalysis(userId: number): Promise<AnalysisResult | null> {
+  const cached = currentAnalysisByUser.get(userId);
+  if (cached) {
+    return cached;
   }
+
+  const db = getDbPool();
+  const result = await db.query<{ payload: AnalysisResult }>(
+    `
+      SELECT payload
+      FROM analysis_runs
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [userId]
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return null;
+  }
+
+  const analysis = row.payload;
+  currentAnalysisByUser.set(userId, analysis);
+  return analysis;
 }
 
-export function getCurrentAnalysis(): AnalysisResult | null {
-  return currentAnalysis;
+export function isAnalysisRunning(userId: number): boolean {
+  return runningAnalysisByUser.has(userId);
 }
 
-export function isAnalysisRunning(): boolean {
-  return Boolean(runningAnalysis);
+export async function setCurrentAnalysis(userId: number, analysis: AnalysisResult): Promise<void> {
+  currentAnalysisByUser.set(userId, analysis);
+
+  const db = getDbPool();
+  await db.query(
+    `
+      INSERT INTO analysis_runs(user_id, analysis_id, source, payload)
+      VALUES($1, $2, $3, $4::jsonb)
+    `,
+    [userId, analysis.id, analysis.summary.source, JSON.stringify(analysis)]
+  );
 }
 
-export async function setCurrentAnalysis(analysis: AnalysisResult): Promise<void> {
-  currentAnalysis = analysis;
-  await fs.mkdir(path.dirname(DATA_FILE), { recursive: true });
-  await fs.writeFile(DATA_FILE, JSON.stringify(analysis, null, 2), "utf8");
-}
+export async function runAnalysis(userId: number, task: () => Promise<AnalysisResult>): Promise<AnalysisResult> {
+  const existing = runningAnalysisByUser.get(userId);
+  if (existing) {
+    return existing;
+  }
 
-export async function runAnalysis(task: () => Promise<AnalysisResult>): Promise<AnalysisResult> {
-  if (!runningAnalysis) {
-    runningAnalysis = task()
+  const running = task()
       .then(async (analysis) => {
-        await setCurrentAnalysis(analysis);
+        await setCurrentAnalysis(userId, analysis);
         return analysis;
       })
       .finally(() => {
-        runningAnalysis = null;
+        runningAnalysisByUser.delete(userId);
       });
-  }
 
-  return runningAnalysis;
+  runningAnalysisByUser.set(userId, running);
+  return running;
 }

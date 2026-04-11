@@ -220,3 +220,46 @@ export interface RepoAiCodeOriginResponse {
   summary: string;
   signals: string[];
 }
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  createdAt: string;
+}
+
+export interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export interface RegisterRequest {
+  email: string;
+  password: string;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface RegisterResponse {
+  user: AuthUser;
+  message: string;
+}
+
+export interface VerifyEmailRequest {
+  token: string;
+}
+
+export interface RequestPasswordResetRequest {
+  email: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  newPassword: string;
+}
+
+export interface GoogleAuthRequest {
+  idToken: string;
+}

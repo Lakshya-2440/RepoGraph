@@ -5,26 +5,46 @@ import cors from "cors";
 import express from "express";
 
 import type {
-  AiRepoInsight,
   AnalyzeRequest,
   AnalysisResult,
+  AuthResponse,
   ChatMessage,
   GraphEdge,
   GraphNode,
   HealthResponse,
+  LoginRequest,
   NodeDetailResponse,
+  GoogleAuthRequest,
+  RequestPasswordResetRequest,
+  ResetPasswordRequest,
+  RegisterResponse,
   RepoAiInsightsResponse,
   RepoAiCodeOriginResponse,
   RepoChatRequest,
   RepoChatResponse,
+  RegisterRequest,
   SearchResult,
-  SubgraphResponse
+  SubgraphResponse,
+  VerifyEmailRequest
 } from "../../shared/src/index.js";
+import {
+  AuthedRequest,
+  getLoginAttemptKey,
+  issueAuthToken,
+  loginOrRegisterWithGoogle,
+  loginUser,
+  registerUser,
+  requestPasswordReset,
+  requireAuth,
+  resetPasswordByToken,
+  verifyEmailByToken
+} from "./auth.js";
 import { analyzeRepository } from "./analyzer/analyzeRepository.js";
 import { estimateCodeOrigin } from "./chat/repoCodeOrigin.js";
 import { generateAiInsights } from "./chat/repoAiInsights.js";
 import { answerRepoQuestion } from "./chat/repoChat.js";
 import { loadEnvironment } from "./config/env.js";
+import { getDbPool, initializeDatabase } from "./db/index.js";
 import { getCurrentAnalysis, isAnalysisRunning, loadStoredAnalysis, runAnalysis } from "./store/analysisStore.js";
 
 loadEnvironment();
@@ -33,24 +53,146 @@ const app = express();
 const port = Number(process.env.PORT ?? 4000);
 const frontendDist = path.resolve(process.cwd(), "frontend/dist");
 
-await loadStoredAnalysis();
+const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
-app.use(cors());
+await loadStoredAnalysis();
+await initializeDatabase();
+
+app.set("trust proxy", 1);
+app.use(
+  cors({
+    origin: corsOrigins.length === 0 ? true : corsOrigins,
+    credentials: true
+  })
+);
 app.use(express.json({ limit: "2mb" }));
 
-app.get("/api/health", (_request, response) => {
+app.get("/api/health", async (_request, response) => {
+  const db = getDbPool();
+  const result = await db.query<{ count: string }>("SELECT COUNT(*) AS count FROM analysis_runs");
+  const hasAnyAnalysis = Number(result.rows[0]?.count ?? 0) > 0;
+
   const payload: HealthResponse = {
     status: "ok",
-    hasAnalysis: Boolean(getCurrentAnalysis()),
-    analyzing: isAnalysisRunning(),
+    hasAnalysis: hasAnyAnalysis,
+    analyzing: false,
     defaultSource: process.cwd()
   };
 
   response.json(payload);
 });
 
-app.get("/api/current", (_request, response) => {
-  const current = getCurrentAnalysis();
+app.post("/api/auth/register", async (request, response) => {
+  const body = (request.body ?? {}) as Partial<RegisterRequest>;
+
+  try {
+    const user = await registerUser(`${body.email ?? ""}`, `${body.password ?? ""}`);
+    response.status(201).json({
+      user,
+      message: "Account created. Please verify your email before logging in."
+    } satisfies RegisterResponse);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Registration failed." });
+  }
+});
+
+app.post("/api/auth/login", async (request, response) => {
+  const body = (request.body ?? {}) as Partial<LoginRequest>;
+
+  try {
+    const email = `${body.email ?? ""}`;
+    const user = await loginUser(email, `${body.password ?? ""}`, getLoginAttemptKey(request, email));
+    const token = issueAuthToken(user);
+    response.json({ token, user } satisfies AuthResponse);
+  } catch (error) {
+    response.status(401).json({ error: error instanceof Error ? error.message : "Login failed." });
+  }
+});
+
+app.post("/api/auth/google", async (request, response) => {
+  const body = (request.body ?? {}) as Partial<GoogleAuthRequest>;
+  const idToken = `${body.idToken ?? ""}`.trim();
+  if (!idToken) {
+    response.status(400).json({ error: "Google ID token is required." });
+    return;
+  }
+
+  try {
+    const user = await loginOrRegisterWithGoogle(idToken);
+    const token = issueAuthToken(user);
+    response.json({ token, user } satisfies AuthResponse);
+  } catch (error) {
+    response.status(401).json({ error: error instanceof Error ? error.message : "Google authentication failed." });
+  }
+});
+
+app.post("/api/auth/verify-email", async (request, response) => {
+  const body = (request.body ?? {}) as Partial<VerifyEmailRequest>;
+  const token = `${body.token ?? ""}`.trim();
+
+  if (!token) {
+    response.status(400).json({ error: "Verification token is required." });
+    return;
+  }
+
+  try {
+    await verifyEmailByToken(token);
+    response.json({ message: "Email verified successfully." });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Email verification failed." });
+  }
+});
+
+app.post("/api/auth/request-password-reset", async (request, response) => {
+  const body = (request.body ?? {}) as Partial<RequestPasswordResetRequest>;
+
+  try {
+    await requestPasswordReset(`${body.email ?? ""}`);
+  } finally {
+    response.json({ message: "If the account exists, a password reset link has been sent." });
+  }
+});
+
+app.post("/api/auth/reset-password", async (request, response) => {
+  const body = (request.body ?? {}) as Partial<ResetPasswordRequest>;
+  const token = `${body.token ?? ""}`.trim();
+  const newPassword = `${body.newPassword ?? ""}`;
+
+  if (!token || !newPassword) {
+    response.status(400).json({ error: "Token and new password are required." });
+    return;
+  }
+
+  try {
+    await resetPasswordByToken(token, newPassword);
+    response.json({ message: "Password reset successful." });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Password reset failed." });
+  }
+});
+
+app.get("/api/auth/me", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  if (!authed.user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  response.json({ user: authed.user });
+});
+
+app.get("/api/current", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const current = await getCurrentAnalysis(user.id);
 
   if (!current) {
     response.status(404).json({ error: "No analysis has been generated yet." });
@@ -60,7 +202,14 @@ app.get("/api/current", (_request, response) => {
   response.json(current);
 });
 
-app.post("/api/analyze", async (request, response) => {
+app.post("/api/analyze", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
   const body = request.body as Partial<AnalyzeRequest>;
   const source = body.source?.trim();
 
@@ -70,7 +219,7 @@ app.post("/api/analyze", async (request, response) => {
   }
 
   try {
-    const analysis = await runAnalysis(() => analyzeRepository({ source, ref: body.ref?.trim() }));
+    const analysis = await runAnalysis(user.id, () => analyzeRepository({ source, ref: body.ref?.trim() }));
     response.json(analysis);
   } catch (error) {
     response.status(500).json({
@@ -79,8 +228,15 @@ app.post("/api/analyze", async (request, response) => {
   }
 });
 
-app.get("/api/search", (request, response) => {
-  const analysis = getCurrentAnalysis();
+app.get("/api/search", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available." });
     return;
@@ -107,14 +263,21 @@ app.get("/api/search", (request, response) => {
   response.json(results satisfies SearchResult[]);
 });
 
-app.get("/api/nodes/:nodeId", (request, response) => {
-  const analysis = getCurrentAnalysis();
+app.get("/api/nodes/:nodeId", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available." });
     return;
   }
 
-  const nodeId = request.params.nodeId;
+  const nodeId = `${request.params.nodeId ?? ""}`;
   const node = analysis.graph.nodes.find((candidate) => candidate.id === nodeId);
 
   if (!node) {
@@ -141,8 +304,15 @@ app.get("/api/nodes/:nodeId", (request, response) => {
   response.json(payload);
 });
 
-app.get("/api/file-content", (request, response) => {
-  const analysis = getCurrentAnalysis();
+app.get("/api/file-content", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available." });
     return;
@@ -185,8 +355,15 @@ app.get("/api/file-content", (request, response) => {
   }
 });
 
-app.get("/api/subgraph", (request, response) => {
-  const analysis = getCurrentAnalysis();
+app.get("/api/subgraph", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available." });
     return;
@@ -210,8 +387,15 @@ app.get("/api/subgraph", (request, response) => {
   response.json(subgraph satisfies SubgraphResponse);
 });
 
-app.post("/api/chat", async (request, response) => {
-  const analysis = getCurrentAnalysis();
+app.post("/api/chat", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available. Run analysis first." });
     return;
@@ -233,6 +417,14 @@ app.post("/api/chat", async (request, response) => {
       history
     });
 
+    await getDbPool().query(
+      `
+        INSERT INTO ai_events(user_id, event_type, payload)
+        VALUES($1, $2, $3::jsonb)
+      `,
+      [user.id, "chat", JSON.stringify({ question, model: result.model, sourceCount: result.sources.length })]
+    );
+
     response.json(result satisfies RepoChatResponse);
   } catch (error) {
     response.status(500).json({
@@ -241,8 +433,15 @@ app.post("/api/chat", async (request, response) => {
   }
 });
 
-app.post("/api/insights/ai", async (_request, response) => {
-  const analysis = getCurrentAnalysis();
+app.post("/api/insights/ai", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available. Run analysis first." });
     return;
@@ -250,6 +449,15 @@ app.post("/api/insights/ai", async (_request, response) => {
 
   try {
     const payload = await generateAiInsights({ analysis });
+
+    await getDbPool().query(
+      `
+        INSERT INTO ai_events(user_id, event_type, payload)
+        VALUES($1, $2, $3::jsonb)
+      `,
+      [user.id, "insights", JSON.stringify({ model: payload.model, insightCount: payload.insights.length })]
+    );
+
     response.json(payload satisfies RepoAiInsightsResponse);
   } catch (error) {
     response.status(500).json({
@@ -258,8 +466,15 @@ app.post("/api/insights/ai", async (_request, response) => {
   }
 });
 
-app.post("/api/ai/code-origin", async (_request, response) => {
-  const analysis = getCurrentAnalysis();
+app.post("/api/ai/code-origin", requireAuth, async (request, response) => {
+  const authed = request as AuthedRequest;
+  const user = authed.user;
+  if (!user) {
+    response.status(401).json({ error: "Authentication required." });
+    return;
+  }
+
+  const analysis = await getCurrentAnalysis(user.id);
   if (!analysis) {
     response.status(404).json({ error: "No analysis available. Run analysis first." });
     return;
@@ -267,6 +482,23 @@ app.post("/api/ai/code-origin", async (_request, response) => {
 
   try {
     const payload = await estimateCodeOrigin({ analysis });
+
+    await getDbPool().query(
+      `
+        INSERT INTO ai_events(user_id, event_type, payload)
+        VALUES($1, $2, $3::jsonb)
+      `,
+      [
+        user.id,
+        "code-origin",
+        JSON.stringify({
+          model: payload.model,
+          estimatedAiGeneratedPercent: payload.estimatedAiGeneratedPercent,
+          confidence: payload.confidence
+        })
+      ]
+    );
+
     response.json(payload satisfies RepoAiCodeOriginResponse);
   } catch (error) {
     response.status(500).json({
