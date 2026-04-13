@@ -542,9 +542,13 @@ async function createAndDispatchAuthToken(options: {
 }
 
 async function verifyGoogleIdToken(idToken: string): Promise<string> {
-  const normalizedIdToken = idToken.trim();
-  const jwtParts = normalizedIdToken.split(".");
-  if (jwtParts.length !== 3 || normalizedIdToken.length < 100) {
+  let normalizedIdToken = idToken.trim();
+  if (normalizedIdToken.startsWith("credential=")) {
+    normalizedIdToken = normalizedIdToken.slice("credential=".length).trim();
+  }
+  normalizedIdToken = normalizedIdToken.replace(/^['"]|['"]$/g, "").trim();
+
+  if (!normalizedIdToken || normalizedIdToken.length < 20 || normalizedIdToken.length > 5000) {
     throw new Error("Invalid Google credential token.");
   }
 
