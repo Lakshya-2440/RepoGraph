@@ -542,7 +542,9 @@ async function createAndDispatchAuthToken(options: {
 }
 
 async function verifyGoogleIdToken(idToken: string): Promise<string> {
-  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(idToken)) {
+  const normalizedIdToken = idToken.trim();
+  const jwtParts = normalizedIdToken.split(".");
+  if (jwtParts.length !== 3 || normalizedIdToken.length < 100) {
     throw new Error("Invalid Google credential token.");
   }
 
@@ -557,7 +559,7 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
     try {
       // Verify against configured audiences first for the strongest guarantee.
       ticket = await googleClient.verifyIdToken({
-        idToken,
+        idToken: normalizedIdToken,
         audience: allowedClientIds
       });
     } catch (error) {
@@ -571,11 +573,11 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
         allowedClientIds,
         reason: error instanceof Error ? error.message : "unknown_verify_error"
       });
-      ticket = await googleClient.verifyIdToken({ idToken });
+      ticket = await googleClient.verifyIdToken({ idToken: normalizedIdToken });
     }
   } else {
     // No configured audience: verify cryptographic claims only.
-    ticket = await googleClient.verifyIdToken({ idToken });
+    ticket = await googleClient.verifyIdToken({ idToken: normalizedIdToken });
   }
 
   const payload = ticket.getPayload();
