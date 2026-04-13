@@ -46,6 +46,7 @@ Set these variables in `.env` (for local) or Render service environment settings
 
 ```bash
 DATABASE_URL=postgresql://...
+PG_SSL_STRICT=false
 JWT_SECRET=replace-with-a-long-random-secret
 JWT_EXPIRES_IN=12h
 GOOGLE_CLIENT_ID=your-google-oauth-client-id

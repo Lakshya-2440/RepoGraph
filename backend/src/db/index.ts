@@ -44,6 +44,11 @@ function resolveSslConfig(connectionString: string): PoolConfig["ssl"] {
     return false;
   }
 
+  const forceStrictSsl = (process.env.PG_SSL_STRICT ?? "").trim().toLowerCase() === "true";
+  if (forceStrictSsl) {
+    return { rejectUnauthorized: true };
+  }
+
   let url: URL | null = null;
   try {
     url = new URL(connectionString);
@@ -70,8 +75,9 @@ function resolveSslConfig(connectionString: string): PoolConfig["ssl"] {
     return { rejectUnauthorized: false };
   }
 
-  // Secure default when sslmode is absent.
-  return { rejectUnauthorized: true };
+  // Default for managed cloud DBs when sslmode is absent:
+  // use TLS but skip CA validation to avoid startup failures with self-signed chains.
+  return { rejectUnauthorized: false };
 }
 
 function normalizeConnectionString(connectionString: string): string {
