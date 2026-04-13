@@ -92,8 +92,9 @@ export async function answerRepoQuestion(options: {
 
   const modelCandidates = [
     process.env.HF_CHAT_MODEL?.trim(),
-    "Qwen/Qwen2.5-7B-Instruct",
-    "mistralai/Mistral-7B-Instruct-v0.3"
+    "meta-llama/Llama-2-7b-chat-hf",
+    "mistralai/Mistral-7B-Instruct-v0.1",
+    "google/flan-t5-base"
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   let lastError: Error | null = null;
@@ -116,7 +117,7 @@ export async function answerRepoQuestion(options: {
     }
   }
 
-  throw new Error(lastError?.message ?? "Failed to generate an answer with Hugging Face.");
+  throw new Error(lastError?.message ?? "Failed to generate an answer with Hugging Face. Please check your HF_TOKEN and verify it has access to inference models.");
 }
 
 async function getOrBuildRagIndex(analysis: AnalysisResult): Promise<RagIndex> {

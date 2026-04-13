@@ -34,8 +34,9 @@ export async function generateAiInsights(options: {
 
   const modelCandidates = [
     process.env.HF_CHAT_MODEL?.trim(),
-    "Qwen/Qwen2.5-7B-Instruct",
-    "mistralai/Mistral-7B-Instruct-v0.3"
+    "meta-llama/Llama-2-7b-chat-hf",
+    "mistralai/Mistral-7B-Instruct-v0.1",
+    "google/flan-t5-base"
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   const prompt = buildInsightsPrompt(options.analysis);
