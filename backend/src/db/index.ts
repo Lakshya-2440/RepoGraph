@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import type { PoolConfig } from "pg";
 
 import { loadEnvironment } from "../config/env.js";
 
@@ -14,7 +15,7 @@ export function getDbPool(): Pool {
       throw new Error("DATABASE_URL is required. Configure Neon connection string in environment.");
     }
 
-    const ssl = shouldUseSsl(connectionString) ? { rejectUnauthorized: true } : false;
+    const ssl = resolveSslConfig(connectionString);
 
     pool = new Pool({
       connectionString,
@@ -35,6 +36,41 @@ function shouldUseSsl(connectionString: string): boolean {
 
   const host = url.hostname.toLowerCase();
   return !(host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local"));
+}
+
+function resolveSslConfig(connectionString: string): PoolConfig["ssl"] {
+  if (!shouldUseSsl(connectionString)) {
+    return false;
+  }
+
+  let url: URL | null = null;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    // Keep strict validation when parsing fails.
+    return { rejectUnauthorized: true };
+  }
+
+  const sslMode = (url.searchParams.get("sslmode") ?? "").toLowerCase();
+
+  // Align behavior with libpq expectations:
+  // - require/prefer/allow = TLS without CA validation
+  // - verify-ca/verify-full = strict CA validation
+  // - disable = no TLS
+  if (sslMode === "disable") {
+    return false;
+  }
+
+  if (sslMode === "verify-ca" || sslMode === "verify-full") {
+    return { rejectUnauthorized: true };
+  }
+
+  if (sslMode === "require" || sslMode === "prefer" || sslMode === "allow") {
+    return { rejectUnauthorized: false };
+  }
+
+  // Secure default when sslmode is absent.
+  return { rejectUnauthorized: true };
 }
 
 export async function initializeDatabase(): Promise<void> {
