@@ -395,7 +395,12 @@ app.use((request, response, next) => {
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/ready", (_request, response) => {
-  response.json({ status: "ok" });
+  loadEnvironment(true);
+  response.json({
+    status: "ok",
+    hasOpenRouterKey: Boolean(process.env.OPENROUTER_API_KEY?.trim()),
+    openRouterModel: process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free"
+  });
 });
 
 app.get("/api/health", requireAuth, async (request, response) => {
