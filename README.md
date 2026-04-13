@@ -8,6 +8,13 @@ The application is full-stack:
 - Frontend explorer (React + Vite)
 - Shared contracts used by both layers
 - Postgres persistence for users, analyses, and AI events
+  <img width="3024" height="1964" alt="Image 13-04-26 at 4 35 PM" src="https://github.com/user-attachments/assets/2e2e1dc0-b96c-4004-8dc6-13dff50f925e" />
+  <img width="3024" height="1964" alt="Image 13-04-26 at 4 35 PM 2" src="https://github.com/user-attachments/assets/c99541c7-ada9-49f9-ae13-8d0182b14d66" />
+  <img width="3024" height="1964" alt="image" src="https://github.com/user-attachments/assets/609a63a4-3d09-487f-ab38-29c419a3ed60" />
+  <img width="3024" height="1964" alt="Image 14-04-26 at 2 41 AM" src="https://github.com/user-attachments/assets/f0bf563a-f82c-4b14-a8d2-b2292c2a2e52" />
+
+
+
 
 ## Core capabilities
 
