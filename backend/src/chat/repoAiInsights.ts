@@ -27,69 +27,16 @@ export async function generateAiInsights(options: {
 }): Promise<RepoAiInsightsResponse> {
   loadEnvironment(true);
 
-  const openAiKey = process.env.OPENAI_API_KEY?.trim();
-  const token = (process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || "").trim();
-  if (!openAiKey && !token) {
-    throw new Error("Missing AI provider key. Set OPENAI_API_KEY (recommended) or HF_TOKEN/HUGGING_FACE_TOKEN.");
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!openRouterKey) {
+    throw new Error("Missing AI provider key. Set OPENROUTER_API_KEY.");
   }
 
   const prompt = buildInsightsPrompt(options.analysis);
   const nodeLookup = createNodeLookup(options.analysis);
 
-  // Try different strategies
-  let lastError: Error | null = null;
-
-  // Try OpenAI first
   try {
-    if (openAiKey) {
-      const content = await queryOpenAIChat(openAiKey, prompt);
-      const parsed = parseAiInsightPayload(content);
-      const mapped = parsed
-        .slice(0, 10)
-        .map((item, index) => mapAiInsight(item, nodeLookup, index))
-        .filter((item): item is AiRepoInsight => Boolean(item));
-
-      if (mapped.length > 0) {
-        return {
-          model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
-          generatedAt: new Date().toISOString(),
-          insights: mapped
-        };
-      }
-    }
-  } catch (error) {
-    lastError = error instanceof Error ? error : new Error("OpenAI failed");
-  }
-
-  // Try Groq if available
-  try {
-    const groqKey = process.env.GROQ_API_KEY;
-    if (groqKey) {
-      const content = await queryGroq(groqKey, prompt);
-      const parsed = parseAiInsightPayload(content);
-      const mapped = parsed
-        .slice(0, 10)
-        .map((item, index) => mapAiInsight(item, nodeLookup, index))
-        .filter((item): item is AiRepoInsight => Boolean(item));
-
-      if (mapped.length > 0) {
-        return {
-          model: "groq/mixtral-8x7b-32768",
-          generatedAt: new Date().toISOString(),
-          insights: mapped
-        };
-      }
-    }
-  } catch (error) {
-    lastError = error instanceof Error ? error : new Error("Groq failed");
-  }
-
-  // Try HF Inference
-  try {
-    if (!token) {
-      throw new Error("HF token not configured");
-    }
-    const content = await queryHuggingFaceInference(token, prompt);
+    const content = await queryOpenRouterChat(openRouterKey, prompt);
     const parsed = parseAiInsightPayload(content);
     const mapped = parsed
       .slice(0, 10)
@@ -98,13 +45,13 @@ export async function generateAiInsights(options: {
 
     if (mapped.length > 0) {
       return {
-        model: "huggingface/inference-api",
+        model: process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free",
         generatedAt: new Date().toISOString(),
         insights: mapped
       };
     }
   } catch (error) {
-    lastError = error instanceof Error ? error : new Error("HF Inference failed");
+    // Fall through to heuristic fallback.
   }
 
   // Fallback: Generate insights from heuristics
@@ -114,6 +61,45 @@ export async function generateAiInsights(options: {
     generatedAt: new Date().toISOString(),
     insights: fallbackInsights
   };
+}
+
+async function queryOpenRouterChat(apiKey: string, userPrompt: string): Promise<string> {
+  const model = process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free";
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a senior staff engineer performing repository analysis. Output strictly as JSON array. No markdown."
+        },
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ],
+      temperature: 0.15,
+      max_tokens: 900
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error("OpenRouter returned empty response");
+  }
+  return content;
 }
 
 function buildInsightsPrompt(analysis: AnalysisResult): string {
@@ -290,46 +276,6 @@ async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
 
   if (!content) {
     throw new Error("Groq returned empty response");
-  }
-
-  return content;
-}
-
-async function queryOpenAIChat(apiKey: string, userPrompt: string): Promise<string> {
-  const model = process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: "You are an expert repository analysis assistant. Produce actionable engineering insights grounded in provided data."
-        },
-        {
-          role: "user",
-          content: userPrompt
-        }
-      ],
-      temperature: 0.2,
-      max_tokens: 1200
-    })
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI request failed (${response.status}): ${body.slice(0, 200)}`);
-  }
-
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content?.trim();
-
-  if (!content) {
-    throw new Error("OpenAI returned empty response");
   }
 
   return content;

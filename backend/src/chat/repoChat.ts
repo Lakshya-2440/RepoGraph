@@ -46,9 +46,9 @@ export async function answerRepoQuestion(options: {
     throw new Error("Question is required.");
   }
 
-  const openAiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!openAiKey) {
-    throw new Error("OPENAI_API_KEY is missing. Configure it in backend environment and redeploy.");
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!openRouterKey) {
+    throw new Error("OPENROUTER_API_KEY is missing. Configure it in backend environment and redeploy.");
   }
 
   const index = await getOrBuildRagIndex(options.analysis);
@@ -104,7 +104,7 @@ export async function answerRepoQuestion(options: {
   ].join("\n");
 
   try {
-    const answer = normalizeStructuredAnswer(await queryOpenAIChat(openAiKey, userPrompt));
+    const answer = normalizeStructuredAnswer(await queryOpenRouterChat(openRouterKey, userPrompt));
     const sources: RepoChatSource[] = selected.map((item) => ({
       path: item.chunk.path,
       score: Number(item.score.toFixed(2)),
@@ -113,12 +113,12 @@ export async function answerRepoQuestion(options: {
 
     return {
       answer,
-      model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
+      model: process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free",
       sources
     };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "Unknown OpenAI error";
-    throw new Error(`OpenAI chat failed: ${reason}`);
+    const reason = error instanceof Error ? error.message : "Unknown OpenRouter error";
+    throw new Error(`OpenRouter chat failed: ${reason}`);
   }
 }
 
@@ -495,9 +495,9 @@ async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
   return content;
 }
 
-async function queryOpenAIChat(apiKey: string, userPrompt: string): Promise<string> {
-  const model = process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+async function queryOpenRouterChat(apiKey: string, userPrompt: string): Promise<string> {
+  const model = process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free";
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -523,14 +523,14 @@ async function queryOpenAIChat(apiKey: string, userPrompt: string): Promise<stri
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`OpenAI request failed (${response.status}): ${body.slice(0, 200)}`);
+    throw new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 200)}`);
   }
 
   const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
   const content = data.choices?.[0]?.message?.content?.trim();
 
   if (!content) {
-    throw new Error("OpenAI returned empty response");
+    throw new Error("OpenRouter returned empty response");
   }
 
   return content;

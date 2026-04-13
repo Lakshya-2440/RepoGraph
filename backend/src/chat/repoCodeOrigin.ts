@@ -23,62 +23,18 @@ interface RawCodeOrigin {
 export async function estimateCodeOrigin(options: { analysis: AnalysisResult }): Promise<RepoAiCodeOriginResponse> {
   loadEnvironment(true);
 
-  const openAiKey = process.env.OPENAI_API_KEY?.trim();
-  const token = (process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || "").trim();
-  if (!openAiKey && !token) {
-    throw new Error("Missing AI provider key. Set OPENAI_API_KEY (recommended) or HF_TOKEN/HUGGING_FACE_TOKEN.");
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!openRouterKey) {
+    throw new Error("Missing AI provider key. Set OPENROUTER_API_KEY.");
   }
 
   const prompt = await buildPrompt(options.analysis);
 
-  let lastError: Error | null = null;
-
-  // Try OpenAI first
   try {
-    if (openAiKey) {
-      const content = await queryOpenAIChat(openAiKey, prompt);
-      const parsed = parseResponse(content);
-      return {
-        model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
-        generatedAt: new Date().toISOString(),
-        estimatedAiGeneratedPercent: clampPercent(parsed.estimatedAiGeneratedPercent ?? 0),
-        confidence: clampPercent(parsed.confidence ?? 60),
-        summary: `${parsed.summary ?? "No summary provided."}`.trim(),
-        signals: (parsed.signals ?? []).map((signal) => `${signal}`.trim()).filter(Boolean).slice(0, 6)
-      };
-    }
-  } catch (error) {
-    lastError = error instanceof Error ? error : new Error("OpenAI failed");
-  }
-
-  // Try Groq if available
-  try {
-    const groqKey = process.env.GROQ_API_KEY;
-    if (groqKey) {
-      const content = await queryGroq(groqKey, prompt);
-      const parsed = parseResponse(content);
-      return {
-        model: "groq/mixtral-8x7b-32768",
-        generatedAt: new Date().toISOString(),
-        estimatedAiGeneratedPercent: clampPercent(parsed.estimatedAiGeneratedPercent ?? 0),
-        confidence: clampPercent(parsed.confidence ?? 60),
-        summary: `${parsed.summary ?? "No summary provided."}`.trim(),
-        signals: (parsed.signals ?? []).map((signal) => `${signal}`.trim()).filter(Boolean).slice(0, 6)
-      };
-    }
-  } catch (error) {
-    lastError = error instanceof Error ? error : new Error("Groq failed");
-  }
-
-  // Try HF Inference
-  try {
-    if (!token) {
-      throw new Error("HF token not configured");
-    }
-    const content = await queryHuggingFaceInference(token, prompt);
+    const content = await queryOpenRouterChat(openRouterKey, prompt);
     const parsed = parseResponse(content);
     return {
-      model: "huggingface/inference-api",
+      model: process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free",
       generatedAt: new Date().toISOString(),
       estimatedAiGeneratedPercent: clampPercent(parsed.estimatedAiGeneratedPercent ?? 0),
       confidence: clampPercent(parsed.confidence ?? 60),
@@ -86,7 +42,7 @@ export async function estimateCodeOrigin(options: { analysis: AnalysisResult }):
       signals: (parsed.signals ?? []).map((signal) => `${signal}`.trim()).filter(Boolean).slice(0, 6)
     };
   } catch (error) {
-    lastError = error instanceof Error ? error : new Error("HF Inference failed");
+    // Fall through to heuristic fallback.
   }
 
   // Fallback: Generate estimate heuristically
@@ -99,6 +55,45 @@ export async function estimateCodeOrigin(options: { analysis: AnalysisResult }):
     summary: fallbackResult.summary,
     signals: fallbackResult.signals
   };
+}
+
+async function queryOpenRouterChat(apiKey: string, userPrompt: string): Promise<string> {
+  const model = process.env.OPENROUTER_MODEL?.trim() || "minimax/minimax-m2.5:free";
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an expert code reviewer estimating whether code is AI-assisted. Output strictly as JSON object. No markdown."
+        },
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ],
+      temperature: 0.15,
+      max_tokens: 900
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenRouter request failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+  if (!content) {
+    throw new Error("OpenRouter returned empty response");
+  }
+  return content;
 }
 
 async function buildPrompt(analysis: AnalysisResult): Promise<string> {
@@ -212,46 +207,6 @@ async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
 
   if (!content) {
     throw new Error("Groq returned empty response");
-  }
-
-  return content;
-}
-
-async function queryOpenAIChat(apiKey: string, userPrompt: string): Promise<string> {
-  const model = process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: "You are a careful software forensics assistant. Produce conservative probability estimates only."
-        },
-        {
-          role: "user",
-          content: userPrompt
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 700
-    })
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`OpenAI request failed (${response.status}): ${body.slice(0, 200)}`);
-  }
-
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content?.trim();
-
-  if (!content) {
-    throw new Error("OpenAI returned empty response");
   }
 
   return content;
