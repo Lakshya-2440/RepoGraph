@@ -70,7 +70,27 @@ const extraCorsOrigins = (process.env.CORS_ORIGIN_EXTRA ?? "")
   .filter(Boolean);
 
 const allowedCorsOrigins = new Set<string>([...corsOrigins, ...extraCorsOrigins]);
-const allowVercelPreviewOrigins = (process.env.ALLOW_VERCEL_PREVIEW_ORIGINS ?? "").trim().toLowerCase() === "true";
+const allowVercelPreviewOrigins = (() => {
+  const configured = (process.env.ALLOW_VERCEL_PREVIEW_ORIGINS ?? "").trim().toLowerCase();
+  if (!configured) {
+    return true;
+  }
+
+  return configured === "true";
+})();
+
+const appBaseOrigin = (() => {
+  const baseUrl = (process.env.APP_BASE_URL ?? "").trim();
+  if (!baseUrl) {
+    return undefined;
+  }
+
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return undefined;
+  }
+})();
 
 const isLoopbackOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
 const isVercelPreviewOrigin = (origin: string): boolean => /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
@@ -348,6 +368,7 @@ app.use(
 
       if (
         allowedCorsOrigins.has(origin) ||
+        origin === appBaseOrigin ||
         isLoopbackOrigin(origin) ||
         (allowVercelPreviewOrigins && isVercelPreviewOrigin(origin)) ||
         (!isProduction && allowedCorsOrigins.size === 0)
