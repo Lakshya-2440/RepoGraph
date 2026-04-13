@@ -73,7 +73,6 @@ export function RepoChatbot({ analysis }: RepoChatbotProps) {
         <div className="chat-header-row">
           <div className="chat-header-copy">
             <div className="chat-title">Repo Graph AI</div>
-            <div className="chat-subtitle">Grounded answers from your analyzed repo.</div>
           </div>
           <button type="button" className="graph-toggle" onClick={() => setOpen(false)}>
             Close
