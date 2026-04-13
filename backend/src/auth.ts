@@ -538,6 +538,10 @@ async function createAndDispatchAuthToken(options: {
 }
 
 async function verifyGoogleIdToken(idToken: string): Promise<string> {
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(idToken)) {
+    throw new Error("Invalid Google credential token.");
+  }
+
   const allowedClientIds = getAllowedGoogleClientIds();
   if (allowedClientIds.length === 0) {
     throw new Error("GOOGLE_CLIENT_ID (or GOOGLE_CLIENT_IDS) is required for Google auth.");
@@ -557,6 +561,11 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
   const emailVerified = payload?.email_verified === true;
   if (!email || !emailVerified) {
     throw new Error("Google account email is missing or unverified.");
+  }
+
+  const aud = payload?.aud;
+  if (typeof aud !== "string" || !allowedClientIds.includes(aud)) {
+    throw new Error("Google token audience is not allowed for this backend.");
   }
 
   return email;

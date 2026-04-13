@@ -206,6 +206,12 @@ export function App() {
               return;
             }
 
+            if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credential)) {
+              setGoogleAuthError("Google returned an invalid credential. Check OAuth setup and retry.");
+              setAuthError("Google authentication failed.");
+              return;
+            }
+
             setAuthSubmitting(true);
             setAuthError(null);
             setAuthInfo(null);
@@ -218,7 +224,7 @@ export function App() {
               })
               .catch((caughtError) => {
                 if (!cancelled) {
-                  setAuthError(caughtError instanceof Error ? caughtError.message : "Google sign-in failed.");
+                  setAuthError("Google sign-in failed. Verify client IDs and authorized origins.");
                 }
               })
               .finally(() => {
