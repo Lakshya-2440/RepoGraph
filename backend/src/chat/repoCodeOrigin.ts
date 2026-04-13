@@ -27,34 +27,55 @@ export async function estimateCodeOrigin(options: { analysis: AnalysisResult }):
     throw new Error("Missing Hugging Face token. Set HF_TOKEN (or HUGGING_FACE_TOKEN) in backend environment.");
   }
 
-  const modelCandidates = [
-    process.env.HF_CHAT_MODEL?.trim(),
-    "mistralai/Mistral-7B-Instruct-v0.1",
-    "meta-llama/Llama-2-7b-chat-hf",
-    "HuggingFaceH4/zephyr-7b-beta"
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
   const prompt = await buildPrompt(options.analysis);
 
   let lastError: Error | null = null;
-  for (const model of modelCandidates) {
-    try {
-      const content = await queryHuggingFaceChat({ token, model, userPrompt: prompt });
+
+  // Try Groq if available
+  try {
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey) {
+      const content = await queryGroq(groqKey, prompt);
       const parsed = parseResponse(content);
       return {
-        model,
+        model: "groq/mixtral-8x7b-32768",
         generatedAt: new Date().toISOString(),
         estimatedAiGeneratedPercent: clampPercent(parsed.estimatedAiGeneratedPercent ?? 0),
         confidence: clampPercent(parsed.confidence ?? 60),
         summary: `${parsed.summary ?? "No summary provided."}`.trim(),
         signals: (parsed.signals ?? []).map((signal) => `${signal}`.trim()).filter(Boolean).slice(0, 6)
       };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown code-origin estimation error.");
     }
+  } catch (error) {
+    lastError = error instanceof Error ? error : new Error("Groq failed");
   }
 
-  throw new Error(lastError?.message ?? "Failed to estimate AI-generated code ratio.");
+  // Try HF Inference
+  try {
+    const content = await queryHuggingFaceInference(token, prompt);
+    const parsed = parseResponse(content);
+    return {
+      model: "huggingface/inference-api",
+      generatedAt: new Date().toISOString(),
+      estimatedAiGeneratedPercent: clampPercent(parsed.estimatedAiGeneratedPercent ?? 0),
+      confidence: clampPercent(parsed.confidence ?? 60),
+      summary: `${parsed.summary ?? "No summary provided."}`.trim(),
+      signals: (parsed.signals ?? []).map((signal) => `${signal}`.trim()).filter(Boolean).slice(0, 6)
+    };
+  } catch (error) {
+    lastError = error instanceof Error ? error : new Error("HF Inference failed");
+  }
+
+  // Fallback: Generate estimate heuristically
+  const fallbackResult = generateFallbackCodeOriginEstimate(options.analysis);
+  return {
+    model: "fallback/heuristic-estimator",
+    generatedAt: new Date().toISOString(),
+    estimatedAiGeneratedPercent: fallbackResult.estimatedAiGeneratedPercent,
+    confidence: fallbackResult.confidence,
+    summary: fallbackResult.summary,
+    signals: fallbackResult.signals
+  };
 }
 
 async function buildPrompt(analysis: AnalysisResult): Promise<string> {
@@ -131,95 +152,135 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "mixtral-8x7b-32768",
+      messages: [
+        {
+          role: "system",
+          content: "You are a careful software forensics assistant. Produce conservative probability estimates only."
+        },
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 700
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Groq request failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("Groq returned empty response");
+  }
+
+  return content;
+}
+
+async function queryHuggingFaceInference(token: string, userPrompt: string): Promise<string> {
+  // Use HF's free models that work with the Inference API
+  const freeModels = [
+    "bigscience/bloom",
+    "EleutherAI/gpt-neox-20b",
+    "tiiuae/falcon-7b-instruct",
+    "gpt2"
+  ];
+
+  let lastError: Error | null = null;
+
+  for (const model of freeModels) {
+    try {
+      const response = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          inputs: userPrompt,
+          parameters: {
+            max_length: 800,
+            temperature: 0.1
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        lastError = new Error(`Model ${model} failed (${response.status})`);
+        continue;
+      }
+
+      const data = await response.json() as Array<{ generated_text?: string }>;
+      const content = data?.[0]?.generated_text?.trim();
+
+      if (content) {
+        return content;
+      }
+
+      lastError = new Error(`Model ${model} returned empty`);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(`Model ${model} error`);
+      continue;
+    }
+  }
+
+  throw lastError ?? new Error("No HF model succeeded");
+}
+
+function generateFallbackCodeOriginEstimate(analysis: AnalysisResult): {
+  estimatedAiGeneratedPercent: number;
+  confidence: number;
+  summary: string;
+  signals: string[];
+} {
+  const totalNodes = analysis.graph.nodes.length;
+  const commentary = analysis.graph.nodes.filter((n) => (n.metadata?.comment_ratio ?? 0) > 0.3);
+  const unusualPatterns = analysis.graph.nodes.filter((n) => (n.metadata?.unusual_naming ?? false));
+
+  // Conservative estimate
+  const aiEstimate = Math.min(
+    30,
+    Math.round((commentary.length / Math.max(1, totalNodes)) * 50 + (unusualPatterns.length / Math.max(1, totalNodes)) * 20)
+  );
+
+  const signals: string[] = [];
+  if (commentary.length > 0) {
+    signals.push(`Found ${commentary.length} nodes with high comment ratios`);
+  }
+  if (unusualPatterns.length > 0) {
+    signals.push(`Detected ${unusualPatterns.length} nodes with unusual naming patterns`);
+  }
+  signals.push("Analysis based on structural heuristics");
+  signals.push("Confidence level is conservative estimate");
+
+  return {
+    estimatedAiGeneratedPercent: aiEstimate,
+    confidence: 45,
+    summary: `Based on structural analysis, an estimated ${aiEstimate}% of the code may have been AI-assisted. This is a conservative estimate derived from naming patterns and code structure, not actual content analysis.`,
+    signals: signals.slice(0, 4)
+  };
+}
+
 async function queryHuggingFaceChat(options: {
   token: string;
   model: string;
   userPrompt: string;
 }): Promise<string> {
-  // Try using the Hugging Face Inference API directly for more reliable access
-  const endpoints = [
-    `https://api-inference.huggingface.co/models/${options.model}`,
-    "https://router.huggingface.co/v1/chat/completions"
-  ];
-
-  let lastError: Error | null = null;
-
-  for (const endpoint of endpoints) {
-    try {
-      if (endpoint.includes("api-inference")) {
-        // Use the direct inference API format
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${options.token}`
-          },
-          body: JSON.stringify({
-            inputs: options.userPrompt,
-            parameters: {
-              temperature: 0.1,
-              max_new_tokens: 700
-            }
-          })
-        });
-
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(`HF API failed (${response.status}): ${body.slice(0, 200)}`);
-        }
-
-        const payload = await response.json() as Array<{ generated_text?: string }>;
-        const content = payload?.[0]?.generated_text?.trim();
-
-        if (!content) {
-          throw new Error("HF API returned empty response");
-        }
-
-        return content;
-      } else {
-        // Fall back to router endpoint format
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${options.token}`
-          },
-          body: JSON.stringify({
-            model: options.model,
-            messages: [
-              {
-                role: "system",
-                content: "You are a careful software forensics assistant. Produce conservative probability estimates only."
-              },
-              {
-                role: "user",
-                content: options.userPrompt
-              }
-            ],
-            temperature: 0.1,
-            max_tokens: 700
-          })
-        });
-
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(`Router failed (${response.status}): ${body.slice(0, 200)}`);
-        }
-
-        const payload = (await response.json()) as HuggingFaceChatResponse;
-        const content = payload.choices?.[0]?.message?.content?.trim();
-
-        if (!content) {
-          throw new Error("Router returned empty response");
-        }
-
-        return content;
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown error");
-      continue;
-    }
-  }
-
-  throw lastError ?? new Error("All HF endpoints failed");
+  // This is deprecated but kept for backward compatibility
+  return queryHuggingFaceInference(options.token, options.userPrompt);
 }

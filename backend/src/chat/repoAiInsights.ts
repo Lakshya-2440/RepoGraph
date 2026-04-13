@@ -32,41 +32,62 @@ export async function generateAiInsights(options: {
     throw new Error("Missing Hugging Face token. Set HF_TOKEN (or HUGGING_FACE_TOKEN) in backend environment.");
   }
 
-  const modelCandidates = [
-    process.env.HF_CHAT_MODEL?.trim(),
-    "mistralai/Mistral-7B-Instruct-v0.1",
-    "meta-llama/Llama-2-7b-chat-hf",
-    "HuggingFaceH4/zephyr-7b-beta"
-  ].filter((candidate): candidate is string => Boolean(candidate));
-
   const prompt = buildInsightsPrompt(options.analysis);
   const nodeLookup = createNodeLookup(options.analysis);
 
+  // Try different strategies
   let lastError: Error | null = null;
-  for (const model of modelCandidates) {
-    try {
-      const content = await queryHuggingFaceChat({ token, model, userPrompt: prompt });
+
+  // Try Groq if available
+  try {
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey) {
+      const content = await queryGroq(groqKey, prompt);
       const parsed = parseAiInsightPayload(content);
       const mapped = parsed
         .slice(0, 10)
         .map((item, index) => mapAiInsight(item, nodeLookup, index))
         .filter((item): item is AiRepoInsight => Boolean(item));
 
-      if (mapped.length === 0) {
-        throw new Error("AI returned no usable insights.");
+      if (mapped.length > 0) {
+        return {
+          model: "groq/mixtral-8x7b-32768",
+          generatedAt: new Date().toISOString(),
+          insights: mapped
+        };
       }
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error : new Error("Groq failed");
+  }
 
+  // Try HF Inference
+  try {
+    const content = await queryHuggingFaceInference(token, prompt);
+    const parsed = parseAiInsightPayload(content);
+    const mapped = parsed
+      .slice(0, 10)
+      .map((item, index) => mapAiInsight(item, nodeLookup, index))
+      .filter((item): item is AiRepoInsight => Boolean(item));
+
+    if (mapped.length > 0) {
       return {
-        model,
+        model: "huggingface/inference-api",
         generatedAt: new Date().toISOString(),
         insights: mapped
       };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown AI insight generation error.");
     }
+  } catch (error) {
+    lastError = error instanceof Error ? error : new Error("HF Inference failed");
   }
 
-  throw new Error(lastError?.message ?? "Failed to generate AI insights.");
+  // Fallback: Generate insights from heuristics
+  const fallbackInsights = generateFallbackInsights(options.analysis, nodeLookup);
+  return {
+    model: "fallback/heuristic-analysis",
+    generatedAt: new Date().toISOString(),
+    insights: fallbackInsights
+  };
 }
 
 function buildInsightsPrompt(analysis: AnalysisResult): string {
@@ -209,96 +230,161 @@ function mapAiInsight(
   };
 }
 
+async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "mixtral-8x7b-32768",
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert repository analysis assistant. Produce actionable engineering insights grounded in provided data."
+        },
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ],
+      temperature: 0.2,
+      max_tokens: 1200
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Groq request failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("Groq returned empty response");
+  }
+
+  return content;
+}
+
+async function queryHuggingFaceInference(token: string, userPrompt: string): Promise<string> {
+  // Use HF's free models that work with the Inference API
+  const freeModels = [
+    "bigscience/bloom",
+    "EleutherAI/gpt-neox-20b",
+    "tiiuae/falcon-7b-instruct",
+    "gpt2"
+  ];
+
+  let lastError: Error | null = null;
+
+  for (const model of freeModels) {
+    try {
+      const response = await fetch(`https://api-inference.huggingface.co/models/${model}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          inputs: userPrompt,
+          parameters: {
+            max_length: 1300,
+            temperature: 0.2
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        lastError = new Error(`Model ${model} failed (${response.status})`);
+        continue;
+      }
+
+      const data = await response.json() as Array<{ generated_text?: string }>;
+      const content = data?.[0]?.generated_text?.trim();
+
+      if (content) {
+        return content;
+      }
+
+      lastError = new Error(`Model ${model} returned empty`);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(`Model ${model} error`);
+      continue;
+    }
+  }
+
+  throw lastError ?? new Error("No HF model succeeded");
+}
+
+function generateFallbackInsights(analysis: AnalysisResult, nodeLookup: Map<string, { id: string; label: string; path?: string }>): AiRepoInsight[] {
+  const insights: AiRepoInsight[] = [];
+
+  // High-level insights
+  const totalFiles = analysis.graph.nodes.filter((n) => n.type === "File").length;
+  const totalFunctions = analysis.graph.nodes.filter((n) => n.type === "Function").length;
+  const dependencies = analysis.graph.nodes.filter((n) => n.type === "Dependency").length;
+
+  insights.push({
+    id: `ai-${Date.now()}-0`,
+    kind: "info",
+    title: "Repository Structure Overview",
+    message: `This repository contains ${totalFiles} files, ${totalFunctions} functions, and ${dependencies} dependency relationships.`,
+    confidence: 85,
+    nodeId: undefined,
+    nodeLabel: undefined
+  });
+
+  // Find highly connected nodes
+  const highInboundNodes = analysis.graph.nodes
+    .filter((n) => (n.metrics?.inbound ?? 0) > 5)
+    .slice(0, 3);
+
+  if (highInboundNodes.length > 0) {
+    const fileNames = highInboundNodes
+      .filter((n) => n.type === "File")
+      .map((n) => (n.type === "File" ? (n as any).path : n.label))
+      .join(", ");
+
+    if (fileNames) {
+      insights.push({
+        id: `ai-${Date.now()}-1`,
+        kind: "warning",
+        title: "Highly Interdependent Modules",
+        message: `Files like ${fileNames} show high coupling. Consider refactoring for better modularity.`,
+        confidence: 75,
+        nodeId: highInboundNodes[0]?.id,
+        nodeLabel: highInboundNodes[0]?.label
+      });
+    }
+  }
+
+  // Check for potential issues
+  const isolatedNodes = analysis.graph.nodes.filter((n) => (n.metrics?.inbound ?? 0) === 0 && (n.metrics?.outbound ?? 0) === 0).length;
+
+  if (isolatedNodes > 0) {
+    insights.push({
+      id: `ai-${Date.now()}-2`,
+      kind: "info",
+      title: "Unused Code Detected",
+      message: `Found ${isolatedNodes} isolated components that may be unused or new to the codebase.`,
+      confidence: 70,
+      nodeId: undefined,
+      nodeLabel: undefined
+    });
+  }
+
+  return insights.slice(0, 10);
+}
+
 async function queryHuggingFaceChat(options: {
   token: string;
   model: string;
   userPrompt: string;
 }): Promise<string> {
-  // Try using the Hugging Face Inference API directly for more reliable access
-  const endpoints = [
-    `https://api-inference.huggingface.co/models/${options.model}`,
-    "https://router.huggingface.co/v1/chat/completions"
-  ];
-
-  let lastError: Error | null = null;
-
-  for (const endpoint of endpoints) {
-    try {
-      if (endpoint.includes("api-inference")) {
-        // Use the direct inference API format
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${options.token}`
-          },
-          body: JSON.stringify({
-            inputs: options.userPrompt,
-            parameters: {
-              temperature: 0.2,
-              max_new_tokens: 1200
-            }
-          })
-        });
-
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(`HF API failed (${response.status}): ${body.slice(0, 200)}`);
-        }
-
-        const payload = await response.json() as Array<{ generated_text?: string }>;
-        const content = payload?.[0]?.generated_text?.trim();
-
-        if (!content) {
-          throw new Error("HF API returned empty response");
-        }
-
-        return content;
-      } else {
-        // Fall back to router endpoint format
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${options.token}`
-          },
-          body: JSON.stringify({
-            model: options.model,
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are an expert repository analysis assistant. Produce actionable engineering insights grounded in provided data."
-              },
-              {
-                role: "user",
-                content: options.userPrompt
-              }
-            ],
-            temperature: 0.2,
-            max_tokens: 1200
-          })
-        });
-
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(`Router failed (${response.status}): ${body.slice(0, 200)}`);
-        }
-
-        const payload = (await response.json()) as HuggingFaceChatResponse;
-        const content = payload.choices?.[0]?.message?.content?.trim();
-
-        if (!content) {
-          throw new Error("Router returned empty response");
-        }
-
-        return content;
-      }
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error("Unknown error");
-      continue;
-    }
-  }
-
-  throw lastError ?? new Error("All HF endpoints failed");
+  // This is deprecated but kept for backward compatibility
+  return queryHuggingFaceInference(options.token, options.userPrompt);
 }
