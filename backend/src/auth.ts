@@ -552,11 +552,31 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
     googleClient = new OAuth2Client();
   }
 
-  // Verify signature and standard claims first.
-  // Audience enforcement is handled below and can be strict or permissive by config.
-  const ticket = await googleClient.verifyIdToken({
-    idToken
-  });
+  let ticket;
+  if (allowedClientIds.length > 0) {
+    try {
+      // Verify against configured audiences first for the strongest guarantee.
+      ticket = await googleClient.verifyIdToken({
+        idToken,
+        audience: allowedClientIds
+      });
+    } catch (error) {
+      if (isGoogleAudienceStrict()) {
+        throw new Error("Google token audience is not allowed for this backend.");
+      }
+
+      // Compatibility fallback for production misconfiguration:
+      // still verify signature/claims, then perform permissive audience handling below.
+      logSecurityEvent("google_auth_audience_verify_failed_fallback", {
+        allowedClientIds,
+        reason: error instanceof Error ? error.message : "unknown_verify_error"
+      });
+      ticket = await googleClient.verifyIdToken({ idToken });
+    }
+  } else {
+    // No configured audience: verify cryptographic claims only.
+    ticket = await googleClient.verifyIdToken({ idToken });
+  }
 
   const payload = ticket.getPayload();
   const email = payload?.email?.trim().toLowerCase();

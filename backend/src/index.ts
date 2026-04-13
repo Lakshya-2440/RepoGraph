@@ -503,7 +503,9 @@ app.post("/api/auth/google", googleAuthRateLimiter, async (request, response) =>
   } catch (error) {
     logAuthAttempt("google_auth_failed", request, undefined, error);
     response.status(401).json({
-      error: "Google authentication failed. Verify OAuth client IDs and authorized origins."
+      error: error instanceof Error
+        ? `Google authentication failed: ${error.message}`
+        : "Google authentication failed."
     });
   }
 });
