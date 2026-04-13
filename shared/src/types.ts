@@ -177,6 +177,7 @@ export interface HealthResponse {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  reasoning_details?: unknown;
 }
 
 export interface RepoChatRequest {

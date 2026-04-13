@@ -315,8 +315,8 @@ function generateFallbackCodeOriginEstimate(analysis: AnalysisResult): {
   signals: string[];
 } {
   const totalNodes = analysis.graph.nodes.length;
-  const commentary = analysis.graph.nodes.filter((n) => (n.metadata?.comment_ratio ?? 0) > 0.3);
-  const unusualPatterns = analysis.graph.nodes.filter((n) => (n.metadata?.unusual_naming ?? false));
+  const commentary = analysis.graph.nodes.filter((n) => ((n.data as { comment_ratio?: number } | undefined)?.comment_ratio ?? 0) > 0.3);
+  const unusualPatterns = analysis.graph.nodes.filter((n) => Boolean((n.data as { unusual_naming?: boolean } | undefined)?.unusual_naming));
 
   // Conservative estimate
   const aiEstimate = Math.min(
