@@ -45,9 +45,10 @@ export async function answerRepoQuestion(options: {
     throw new Error("Question is required.");
   }
 
-  const token = process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN;
-  if (!token) {
-    throw new Error("Missing Hugging Face token. Set HF_TOKEN (or HUGGING_FACE_TOKEN) in backend environment.");
+  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const token = (process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || "").trim();
+  if (!openAiKey && !token) {
+    throw new Error("Missing AI provider key. Set OPENAI_API_KEY (recommended) or HF_TOKEN/HUGGING_FACE_TOKEN.");
   }
 
   const index = await getOrBuildRagIndex(options.analysis);
@@ -93,7 +94,27 @@ export async function answerRepoQuestion(options: {
   // Try multiple providers in order
   let lastError: Error | null = null;
 
-  // First, try Groq (free, no auth needed if GROQ_API_KEY is set, or we try with placeholder)
+  // First, try OpenAI (recommended)
+  try {
+    if (openAiKey) {
+      const answer = await queryOpenAIChat(openAiKey, userPrompt);
+      const sources: RepoChatSource[] = ranked.map((item) => ({
+        path: item.chunk.path,
+        score: Number(item.score.toFixed(2)),
+        snippet: item.chunk.preview
+      }));
+      return {
+        answer,
+        model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
+        sources
+      };
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error : new Error("OpenAI failed");
+    console.error("OpenAI attempt failed:", lastError.message);
+  }
+
+  // Second, try Groq
   try {
     const groqKey = process.env.GROQ_API_KEY;
     if (groqKey) {
@@ -114,8 +135,11 @@ export async function answerRepoQuestion(options: {
     console.error("Groq attempt failed:", lastError.message);
   }
 
-  // Second, try HF Inference endpoint with models that work with free tier
+  // Third, try HF Inference endpoint with models that work with free tier
   try {
+    if (!token) {
+      throw new Error("HF token not configured");
+    }
     const answer = await queryHuggingFaceInference(token, userPrompt);
     const sources: RepoChatSource[] = ranked.map((item) => ({
       path: item.chunk.path,
@@ -513,6 +537,47 @@ async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
 
   if (!content) {
     throw new Error("Groq returned empty response");
+  }
+
+  return content;
+}
+
+async function queryOpenAIChat(apiKey: string, userPrompt: string): Promise<string> {
+  const model = process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an expert codebase assistant. Stay factual, concise, and grounded in repository context. Always output a structured response with short bullet lists under clear section headings."
+        },
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ],
+      temperature: 0.15,
+      max_tokens: 900
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenAI request failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("OpenAI returned empty response");
   }
 
   return content;

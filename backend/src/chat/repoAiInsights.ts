@@ -27,9 +27,10 @@ export async function generateAiInsights(options: {
 }): Promise<RepoAiInsightsResponse> {
   loadEnvironment(true);
 
-  const token = process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN;
-  if (!token) {
-    throw new Error("Missing Hugging Face token. Set HF_TOKEN (or HUGGING_FACE_TOKEN) in backend environment.");
+  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const token = (process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || "").trim();
+  if (!openAiKey && !token) {
+    throw new Error("Missing AI provider key. Set OPENAI_API_KEY (recommended) or HF_TOKEN/HUGGING_FACE_TOKEN.");
   }
 
   const prompt = buildInsightsPrompt(options.analysis);
@@ -37,6 +38,28 @@ export async function generateAiInsights(options: {
 
   // Try different strategies
   let lastError: Error | null = null;
+
+  // Try OpenAI first
+  try {
+    if (openAiKey) {
+      const content = await queryOpenAIChat(openAiKey, prompt);
+      const parsed = parseAiInsightPayload(content);
+      const mapped = parsed
+        .slice(0, 10)
+        .map((item, index) => mapAiInsight(item, nodeLookup, index))
+        .filter((item): item is AiRepoInsight => Boolean(item));
+
+      if (mapped.length > 0) {
+        return {
+          model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
+          generatedAt: new Date().toISOString(),
+          insights: mapped
+        };
+      }
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error : new Error("OpenAI failed");
+  }
 
   // Try Groq if available
   try {
@@ -63,6 +86,9 @@ export async function generateAiInsights(options: {
 
   // Try HF Inference
   try {
+    if (!token) {
+      throw new Error("HF token not configured");
+    }
     const content = await queryHuggingFaceInference(token, prompt);
     const parsed = parseAiInsightPayload(content);
     const mapped = parsed
@@ -264,6 +290,46 @@ async function queryGroq(apiKey: string, userPrompt: string): Promise<string> {
 
   if (!content) {
     throw new Error("Groq returned empty response");
+  }
+
+  return content;
+}
+
+async function queryOpenAIChat(apiKey: string, userPrompt: string): Promise<string> {
+  const model = process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "You are an expert repository analysis assistant. Produce actionable engineering insights grounded in provided data."
+        },
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ],
+      temperature: 0.2,
+      max_tokens: 1200
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenAI request failed (${response.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const content = data.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("OpenAI returned empty response");
   }
 
   return content;
