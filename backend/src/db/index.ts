@@ -10,12 +10,13 @@ export function getDbPool(): Pool {
   loadEnvironment(true);
 
   if (!pool) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) {
+    const rawConnectionString = process.env.DATABASE_URL;
+    if (!rawConnectionString) {
       throw new Error("DATABASE_URL is required. Configure Neon connection string in environment.");
     }
 
-    const ssl = resolveSslConfig(connectionString);
+    const ssl = resolveSslConfig(rawConnectionString);
+    const connectionString = normalizeConnectionString(rawConnectionString);
 
     pool = new Pool({
       connectionString,
@@ -71,6 +72,32 @@ function resolveSslConfig(connectionString: string): PoolConfig["ssl"] {
 
   // Secure default when sslmode is absent.
   return { rejectUnauthorized: true };
+}
+
+function normalizeConnectionString(connectionString: string): string {
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    return connectionString;
+  }
+
+  // We control SSL via the explicit `ssl` Pool option above.
+  // Remove SSL-related URL params to avoid pg parser overrides.
+  const sslParams = [
+    "ssl",
+    "sslmode",
+    "sslcert",
+    "sslkey",
+    "sslrootcert",
+    "sslcrl"
+  ];
+
+  for (const key of sslParams) {
+    url.searchParams.delete(key);
+  }
+
+  return url.toString();
 }
 
 export async function initializeDatabase(): Promise<void> {
