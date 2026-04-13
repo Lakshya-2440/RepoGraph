@@ -502,10 +502,10 @@ app.post("/api/auth/google", googleAuthRateLimiter, async (request, response) =>
     response.json({ token, user } satisfies AuthResponse);
   } catch (error) {
     logAuthAttempt("google_auth_failed", request, undefined, error);
+    const message = error instanceof Error ? error.message : "Google authentication failed.";
+    const safeMessage = message.replace(/token:\s*[A-Za-z0-9._-]+/gi, "token: [redacted]");
     response.status(401).json({
-      error: error instanceof Error
-        ? `Google authentication failed: ${error.message}`
-        : "Google authentication failed."
+      error: `Google authentication failed: ${safeMessage}`
     });
   }
 });
@@ -1148,7 +1148,19 @@ function getValidatedOpaqueToken(input: unknown, label: string, response: Respon
 }
 
 function getValidatedGoogleIdToken(input: unknown, response: Response): string | null {
-  return getValidatedOpaqueToken(input, "Google ID token", response);
+  if (typeof input !== "string") {
+    response.status(400).json({ error: "Google ID token is required." });
+    return null;
+  }
+
+  // Google ID tokens are often > 512 chars; do not reuse the short opaque-token limit.
+  const token = sanitizePlainText(input, 5000);
+  if (!token || token.length < 20) {
+    response.status(400).json({ error: "Google ID token is invalid." });
+    return null;
+  }
+
+  return token;
 }
 
 function getValidatedSource(input: unknown, response: Response): string | null {
