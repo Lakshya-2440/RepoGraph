@@ -47,15 +47,26 @@ export async function answerRepoQuestion(options: {
   }
 
   const openAiKey = process.env.OPENAI_API_KEY?.trim();
-  const token = (process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || "").trim();
-  if (!openAiKey && !token) {
-    throw new Error("Missing AI provider key. Set OPENAI_API_KEY (recommended) or HF_TOKEN/HUGGING_FACE_TOKEN.");
+  if (!openAiKey) {
+    throw new Error("OPENAI_API_KEY is missing. Configure it in backend environment and redeploy.");
   }
 
   const index = await getOrBuildRagIndex(options.analysis);
-  const ranked = rankChunks(index.chunks, question).slice(0, 8);
+  const ranked = rankChunks(index.chunks, question)
+    .filter((item) => item.score > 0)
+    .slice(0, 20);
 
-  const contextBlocks = ranked
+  const fileChunkCount = new Map<string, number>();
+  const selected = ranked.filter((item) => {
+    const used = fileChunkCount.get(item.chunk.path) ?? 0;
+    if (used >= 2) {
+      return false;
+    }
+    fileChunkCount.set(item.chunk.path, used + 1);
+    return true;
+  }).slice(0, 8);
+
+  const contextBlocks = selected
     .map((item, indexPosition) => {
       const excerpt = item.chunk.text.length > 1400 ? `${item.chunk.text.slice(0, 1400)}\n...` : item.chunk.text;
       return `Source ${indexPosition + 1} | ${item.chunk.path}\n${excerpt}`;
@@ -89,92 +100,26 @@ export async function answerRepoQuestion(options: {
     question,
     "",
     "Retrieved context:",
-    contextBlocks || "No matching source chunks were retrieved."
+    contextBlocks || "No matching source chunks were retrieved. If the question is broad, ask a narrower question mentioning specific feature, directory, or file."
   ].join("\n");
 
-  // Try multiple providers in order
-  let lastError: Error | null = null;
-
-  // First, try OpenAI (recommended)
   try {
-    if (openAiKey) {
-      const answer = await queryOpenAIChat(openAiKey, userPrompt);
-      const sources: RepoChatSource[] = ranked.map((item) => ({
-        path: item.chunk.path,
-        score: Number(item.score.toFixed(2)),
-        snippet: item.chunk.preview
-      }));
-      return {
-        answer,
-        model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
-        sources
-      };
-    }
-  } catch (error) {
-    lastError = error instanceof Error ? error : new Error("OpenAI failed");
-    console.error("OpenAI attempt failed:", lastError.message);
-  }
-
-  // Second, try Groq
-  try {
-    const groqKey = process.env.GROQ_API_KEY;
-    if (groqKey) {
-      const answer = await queryGroq(groqKey, userPrompt);
-      const sources: RepoChatSource[] = ranked.map((item) => ({
-        path: item.chunk.path,
-        score: Number(item.score.toFixed(2)),
-        snippet: item.chunk.preview
-      }));
-      return {
-        answer,
-        model: "groq/mixtral-8x7b-32768",
-        sources
-      };
-    }
-  } catch (error) {
-    lastError = error instanceof Error ? error : new Error("Groq failed");
-    console.error("Groq attempt failed:", lastError.message);
-  }
-
-  // Third, try HF Inference endpoint with models that work with free tier
-  try {
-    if (!token) {
-      throw new Error("HF token not configured");
-    }
-    const answer = await queryHuggingFaceInference(token, userPrompt);
-    const sources: RepoChatSource[] = ranked.map((item) => ({
+    const answer = normalizeStructuredAnswer(await queryOpenAIChat(openAiKey, userPrompt));
+    const sources: RepoChatSource[] = selected.map((item) => ({
       path: item.chunk.path,
       score: Number(item.score.toFixed(2)),
       snippet: item.chunk.preview
     }));
+
     return {
       answer,
-      model: "huggingface/inference-api",
+      model: process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini",
       sources
     };
   } catch (error) {
-    lastError = error instanceof Error ? error : new Error("HF Inference failed");
-    console.error("HF Inference attempt failed:", lastError.message);
+    const reason = error instanceof Error ? error.message : "Unknown OpenAI error";
+    throw new Error(`OpenAI chat failed: ${reason}`);
   }
-
-  // Third, fallback: Generate a smart response from context without LLM
-  try {
-    const answer = generateContextualAnswer(question, ranked, summary);
-    const sources: RepoChatSource[] = ranked.map((item) => ({
-      path: item.chunk.path,
-      score: Number(item.score.toFixed(2)),
-      snippet: item.chunk.preview
-    }));
-    return {
-      answer,
-      model: "fallback/contextual-extraction",
-      sources
-    };
-  } catch (error) {
-    console.error("Fallback failed:", error);
-  }
-
-  throw new Error(`Failed to generate answer. Last error: ${lastError?.message ?? "Unknown"}`);
 }
 
 async function getOrBuildRagIndex(analysis: AnalysisResult): Promise<RagIndex> {
