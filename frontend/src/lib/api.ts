@@ -214,20 +214,6 @@ export async function askRepoQuestion(question: string, history?: ChatMessage[])
   });
 }
 
-export async function openRouterChatCompletions(request: {
-  model: string;
-  messages: Array<{ role: "system" | "user" | "assistant"; content: string; reasoning_details?: unknown }>;
-  reasoning?: { enabled: boolean };
-}): Promise<unknown> {
-  return requestApi<unknown>("/api/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(request)
-  });
-}
-
 export async function fetchAiInsights(): Promise<RepoAiInsightsResponse> {
   return requestApi<RepoAiInsightsResponse>("/api/insights/ai", {
     method: "POST",

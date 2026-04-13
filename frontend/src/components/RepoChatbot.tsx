@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { AnalysisResult, ChatMessage } from "@shared/index";
 
-import { askRepoQuestion, openRouterChatCompletions } from "../lib/api";
+import { askRepoQuestion } from "../lib/api";
 
 interface RepoChatbotProps {
   analysis: AnalysisResult | null;
@@ -12,7 +12,6 @@ type UiMessage = ChatMessage;
 
 export function RepoChatbot({ analysis }: RepoChatbotProps) {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<"repo" | "model">("repo");
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [sending, setSending] = useState(false);
@@ -36,13 +35,10 @@ export function RepoChatbot({ analysis }: RepoChatbotProps) {
   }, [messages, sending, open]);
 
   const trimmedQuestion = question.trim();
-  const canAsk = trimmedQuestion.length > 0 && !sending && (mode === "model" || Boolean(analysis));
+  const canAsk = Boolean(analysis) && trimmedQuestion.length > 0 && !sending;
 
   const submit = async () => {
-    if (!trimmedQuestion || sending) {
-      return;
-    }
-    if (mode === "repo" && !analysis) {
+    if (!analysis || !trimmedQuestion || sending) {
       return;
     }
 
@@ -52,21 +48,13 @@ export function RepoChatbot({ analysis }: RepoChatbotProps) {
     const userMessage: UiMessage = { role: "user", content: trimmedQuestion };
     setMessages((current) => [...current, userMessage]);
 
-    const history = [...messages, userMessage].map((message) => {
-      const candidate: { role: "user" | "assistant"; content: string; reasoning_details?: unknown } = {
-        role: message.role,
-        content: message.content
-      };
-      if (message.role === "assistant" && "reasoning_details" in message) {
-        candidate.reasoning_details = (message as { reasoning_details?: unknown }).reasoning_details;
-      }
-      return candidate;
-    });
+    const history = [...messages, userMessage].map((message) => ({
+      role: message.role,
+      content: message.content
+    }));
 
     try {
-      const assistantMessage: UiMessage = mode === "repo"
-        ? await submitRepo(trimmedQuestion, history)
-        : await submitModel(history);
+      const assistantMessage: UiMessage = await submitRepo(trimmedQuestion, history);
       setMessages((current) => [...current, assistantMessage]);
       setQuestion("");
     } catch (caughtError) {
@@ -84,31 +72,19 @@ export function RepoChatbot({ analysis }: RepoChatbotProps) {
       >
         <div className="chat-header-row">
           <div className="chat-header-copy">
-            <div className="chat-title">{mode === "repo" ? "Repo Graph AI" : "OpenRouter Chat"}</div>
-            <div className="chat-subtitle">
-              {mode === "repo" ? "Grounded answers from your analyzed repo." : "Direct model chat (reasoning continuation enabled)."}
-            </div>
+            <div className="chat-title">Repo Graph AI</div>
+            <div className="chat-subtitle">Grounded answers from your analyzed repo.</div>
           </div>
-          <button
-            type="button"
-            className="graph-toggle"
-            onClick={() => setMode((current) => (current === "repo" ? "model" : "repo"))}
-            title={mode === "repo" ? "Switch to model chat" : "Switch to repo chat"}
-          >
-            {mode === "repo" ? "Model" : "Repo"}
-          </button>
           <button type="button" className="graph-toggle" onClick={() => setOpen(false)}>
             Close
           </button>
         </div>
 
         <div className="chat-messages" aria-live="polite">
-          {mode === "repo" && !analysis ? (
-            <div className="chat-empty">Run analysis first, then ask any question about the repository. Or switch to Model mode.</div>
+          {!analysis ? (
+            <div className="chat-empty">Run analysis first, then ask any question about the repository.</div>
           ) : messages.length === 0 ? (
-            <div className="chat-empty">
-              {mode === "repo" ? "Ask anything about this repository." : "Ask anything. This uses your OpenRouter key on the backend."}
-            </div>
+            <div className="chat-empty">Ask anything about this repository.</div>
           ) : (
             messages.map((message, index) => (
               <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}>
@@ -126,10 +102,10 @@ export function RepoChatbot({ analysis }: RepoChatbotProps) {
           <textarea
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
-            placeholder={mode === "repo" ? "Ask anything about this repository..." : "Ask anything..."}
+            placeholder="Ask anything about this repository..."
             rows={3}
             maxLength={2000}
-            disabled={(mode === "repo" && !analysis) || sending}
+            disabled={!analysis || sending}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -167,27 +143,5 @@ export function RepoChatbot({ analysis }: RepoChatbotProps) {
   async function submitRepo(trimmed: string, history: Array<{ role: "user" | "assistant"; content: string }>): Promise<UiMessage> {
     const result = await askRepoQuestion(trimmed, history);
     return { role: "assistant", content: result.answer };
-  }
-
-  async function submitModel(
-    history: Array<{ role: "user" | "assistant"; content: string; reasoning_details?: unknown }>
-  ): Promise<UiMessage> {
-    const payload = await openRouterChatCompletions({
-      model: "minimax/minimax-m2.5:free",
-      messages: history,
-      reasoning: { enabled: true }
-    });
-
-    const message = (payload as { choices?: Array<{ message?: { content?: string; reasoning_details?: unknown } }> }).choices?.[0]?.message;
-    const content = message?.content?.trim();
-    if (!content) {
-      throw new Error("OpenRouter returned an empty message.");
-    }
-
-    return {
-      role: "assistant",
-      content,
-      reasoning_details: message?.reasoning_details
-    };
   }
 }
