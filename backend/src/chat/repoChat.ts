@@ -92,9 +92,9 @@ export async function answerRepoQuestion(options: {
 
   const modelCandidates = [
     process.env.HF_CHAT_MODEL?.trim(),
-    "meta-llama/Llama-2-7b-chat-hf",
     "mistralai/Mistral-7B-Instruct-v0.1",
-    "google/flan-t5-base"
+    "meta-llama/Llama-2-7b-chat-hf",
+    "HuggingFaceH4/zephyr-7b-beta"
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   let lastError: Error | null = null;
@@ -310,43 +310,93 @@ async function queryHuggingFaceChat(options: {
   model: string;
   userPrompt: string;
 }): Promise<string> {
-  const response = await fetch("https://router.huggingface.co/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${options.token}`
-    },
-    body: JSON.stringify({
-      model: options.model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an expert codebase assistant. Stay factual, concise, and grounded in repository context. Always output a structured response with short bullet lists under clear section headings."
-        },
-        {
-          role: "user",
-          content: options.userPrompt
+  // Try using the Hugging Face Inference API directly for more reliable access
+  const endpoints = [
+    `https://api-inference.huggingface.co/models/${options.model}`,
+    "https://router.huggingface.co/v1/chat/completions"
+  ];
+
+  let lastError: Error | null = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      if (endpoint.includes("api-inference")) {
+        // Use the direct inference API format
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${options.token}`
+          },
+          body: JSON.stringify({
+            inputs: options.userPrompt,
+            parameters: {
+              temperature: 0.15,
+              max_new_tokens: 900
+            }
+          })
+        });
+
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(`HF API failed (${response.status}): ${body.slice(0, 200)}`);
         }
-      ],
-      temperature: 0.15,
-      max_tokens: 900
-    })
-  });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Hugging Face request failed (${response.status}): ${body.slice(0, 300)}`);
+        const payload = await response.json() as Array<{ generated_text?: string }>;
+        const content = payload?.[0]?.generated_text?.trim();
+
+        if (!content) {
+          throw new Error("HF API returned empty response");
+        }
+
+        return content;
+      } else {
+        // Fall back to router endpoint format
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${options.token}`
+          },
+          body: JSON.stringify({
+            model: options.model,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are an expert codebase assistant. Stay factual, concise, and grounded in repository context. Always output a structured response with short bullet lists under clear section headings."
+              },
+              {
+                role: "user",
+                content: options.userPrompt
+              }
+            ],
+            temperature: 0.15,
+            max_tokens: 900
+          })
+        });
+
+        if (!response.ok) {
+          const body = await response.text();
+          throw new Error(`Router failed (${response.status}): ${body.slice(0, 200)}`);
+        }
+
+        const payload = (await response.json()) as HuggingFaceChatResponse;
+        const content = payload.choices?.[0]?.message?.content?.trim();
+
+        if (!content) {
+          throw new Error("Router returned empty response");
+        }
+
+        return content;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Unknown error");
+      continue;
+    }
   }
 
-  const payload = (await response.json()) as HuggingFaceChatResponse;
-  const content = payload.choices?.[0]?.message?.content?.trim();
-
-  if (!content) {
-    throw new Error("Hugging Face returned an empty answer.");
-  }
-
-  return content;
+  throw lastError ?? new Error("All HF endpoints failed");
 }
 
 function normalizeStructuredAnswer(value: string): string {
