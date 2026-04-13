@@ -224,7 +224,7 @@ export function App() {
               })
               .catch((caughtError) => {
                 if (!cancelled) {
-                  setAuthError("Google sign-in failed. Verify client IDs and authorized origins.");
+                  setAuthError(caughtError instanceof Error ? caughtError.message : "Google sign-in failed.");
                 }
               })
               .finally(() => {

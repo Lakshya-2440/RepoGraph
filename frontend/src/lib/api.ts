@@ -19,8 +19,28 @@ import type {
   SearchResult
 } from "@shared/index";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const RAW_API_BASE = import.meta.env.VITE_API_BASE?.trim() ?? "";
 const AUTH_TOKEN_KEY = "repograph_auth_token";
+
+function resolveApiBase(): string {
+  if (RAW_API_BASE) {
+    return RAW_API_BASE.replace(/\/+$/, "");
+  }
+
+  // Local dev works with Vite proxy ("/api" -> localhost:4000).
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname.toLowerCase();
+    const isLocal = host === "localhost" || host === "127.0.0.1";
+    if (isLocal) {
+      return "";
+    }
+  }
+
+  // In hosted environments, missing VITE_API_BASE typically means API calls hit static hosting.
+  throw new Error(
+    "Frontend API is not configured. Set VITE_API_BASE to your backend URL (for example https://your-backend.onrender.com)."
+  );
+}
 
 function sanitizeClientText(value: string, maxLength: number): string {
   return value
@@ -213,6 +233,7 @@ export async function fetchAiCodeOriginEstimate(): Promise<RepoAiCodeOriginRespo
 }
 
 async function requestApi<T>(pathname: string, init?: RequestInit, includeAuth = true): Promise<T> {
+  const apiBase = resolveApiBase();
   const headers = new Headers(init?.headers ?? {});
   if (includeAuth) {
     const token = getAuthToken();
@@ -221,7 +242,7 @@ async function requestApi<T>(pathname: string, init?: RequestInit, includeAuth =
     }
   }
 
-  const response = await fetch(`${API_BASE}${pathname}`, {
+  const response = await fetch(`${apiBase}${pathname}`, {
     ...init,
     headers
   });
@@ -234,7 +255,9 @@ async function requestApi<T>(pathname: string, init?: RequestInit, includeAuth =
     }
 
     if (!contentType.includes("application/json")) {
-      throw new Error("Server returned a non-JSON response.");
+      throw new Error(
+        "Server returned non-JSON output. This usually means the API URL is wrong. Verify VITE_API_BASE points to your backend service."
+      );
     }
 
     return JSON.parse(responseText) as U;
