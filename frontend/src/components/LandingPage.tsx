@@ -312,6 +312,9 @@ export function LandingPage() {
           <a href="#coverage" data-scroll-to="coverage" onClick={navigateToSection}>
             Coverage
           </a>
+          <a href="https://www.linkedin.com/in/lakshyaa/" target="_blank" rel="noreferrer">
+            Contact
+          </a>
           <a href="/app" onClick={navigateToApp} className="lp-nav-cta">
             Launch App <span className="lp-arrow">&rarr;</span>
           </a>
@@ -333,7 +336,7 @@ export function LandingPage() {
               Start Building
               <span className="lp-btn-shine" />
             </a>
-            <a href="https://github.com/lakshyagupta" target="_blank" rel="noreferrer" className="lp-btn lp-btn-ghost">
+            <a href="https://github.com/Lakshya-2440" target="_blank" rel="noreferrer" className="lp-btn lp-btn-ghost">
               View GitHub
             </a>
           </div>
