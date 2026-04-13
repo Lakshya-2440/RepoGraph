@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { AnalysisResult, RepoAiCodeOriginResponse } from "../../../shared/src/index.js";
 import { loadEnvironment } from "../config/env.js";
+import { resolveAnalysisRootPath } from "./sourceMaterializer.js";
 
 interface HuggingFaceChatResponse {
   choices?: Array<{
@@ -101,7 +102,10 @@ export async function estimateCodeOrigin(options: { analysis: AnalysisResult }):
 }
 
 async function buildPrompt(analysis: AnalysisResult): Promise<string> {
-  const root = analysis.summary.resolvedPath;
+  const root = await resolveAnalysisRootPath(analysis);
+  if (!root) {
+    throw new Error("Unable to access repository files for AI code-origin estimation.");
+  }
   const filePaths = analysis.graph.nodes
     .filter((node) => node.type === "File" && typeof node.path === "string")
     .map((node) => node.path as string)

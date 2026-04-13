@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { AnalysisResult, ChatMessage, RepoChatResponse, RepoChatSource } from "../../../shared/src/index.js";
 import { loadEnvironment } from "../config/env.js";
+import { resolveAnalysisRootPath } from "./sourceMaterializer.js";
 
 interface RagChunk {
   id: string;
@@ -181,7 +182,10 @@ async function getOrBuildRagIndex(analysis: AnalysisResult): Promise<RagIndex> {
     return ragCache;
   }
 
-  const root = analysis.summary.resolvedPath;
+  const root = await resolveAnalysisRootPath(analysis);
+  if (!root) {
+    throw new Error("Unable to access repository source files for RAG. Re-run analysis for this repository.");
+  }
   const fileNodes = analysis.graph.nodes
     .filter((node) => node.type === "File" && typeof node.path === "string")
     .map((node) => node.path as string)
@@ -219,6 +223,10 @@ async function getOrBuildRagIndex(analysis: AnalysisResult): Promise<RagIndex> {
     analysisId: analysis.id,
     chunks
   };
+
+  if (chunks.length === 0) {
+    throw new Error("RAG index contains zero chunks. Re-run analysis to refresh repository content.");
+  }
 
   return ragCache;
 }
