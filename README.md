@@ -50,9 +50,12 @@ PG_SSL_STRICT=false
 JWT_SECRET=replace-with-a-long-random-secret
 JWT_EXPIRES_IN=12h
 GOOGLE_CLIENT_ID=your-google-oauth-client-id
+GOOGLE_CLIENT_IDS=optional,comma-separated,ids
 VITE_GOOGLE_CLIENT_ID=your-google-oauth-client-id
 HF_TOKEN=hf_xxx
 GITHUB_TOKEN=optional
+CORS_ORIGIN_EXTRA=optional,comma-separated,origins
+ALLOW_VERCEL_PREVIEW_ORIGINS=false
 PORT=4000
 TRAFFIC_ALERT_THRESHOLD=300
 AUTH_FAILURE_ALERT_THRESHOLD=20
@@ -69,6 +72,7 @@ Neon + Render production notes:
 
 1. Create a Neon project and copy its direct (non-pooled) `DATABASE_URL`.
 2. Set the backend service env vars on Render (`DATABASE_URL`, `JWT_SECRET`, `HF_TOKEN`, optional `GITHUB_TOKEN`).
+2.1 If frontend and backend use different Google OAuth client IDs across environments, set `GOOGLE_CLIENT_IDS` on backend to include every allowed web client ID.
 3. Keep `JWT_SECRET` unique per environment and rotate periodically.
 4. Use HTTPS-only frontend URL in production for secure auth token transport.
 

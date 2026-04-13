@@ -64,7 +64,16 @@ const corsOrigins = (process.env.CORS_ORIGIN ?? "")
   .map((value) => value.trim())
   .filter(Boolean);
 
+const extraCorsOrigins = (process.env.CORS_ORIGIN_EXTRA ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+const allowedCorsOrigins = new Set<string>([...corsOrigins, ...extraCorsOrigins]);
+const allowVercelPreviewOrigins = (process.env.ALLOW_VERCEL_PREVIEW_ORIGINS ?? "").trim().toLowerCase() === "true";
+
 const isLoopbackOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+const isVercelPreviewOrigin = (origin: string): boolean => /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin);
 const TRAFFIC_WINDOW_MS = 60_000;
 const TRAFFIC_ALERT_THRESHOLD = Number(process.env.TRAFFIC_ALERT_THRESHOLD ?? 300);
 const AUTH_FAILURE_ALERT_THRESHOLD = Number(process.env.AUTH_FAILURE_ALERT_THRESHOLD ?? 20);
@@ -337,7 +346,12 @@ app.use(
         return;
       }
 
-      if (corsOrigins.includes(origin) || isLoopbackOrigin(origin) || (!isProduction && corsOrigins.length === 0)) {
+      if (
+        allowedCorsOrigins.has(origin) ||
+        isLoopbackOrigin(origin) ||
+        (allowVercelPreviewOrigins && isVercelPreviewOrigin(origin)) ||
+        (!isProduction && allowedCorsOrigins.size === 0)
+      ) {
         callback(null, true);
         return;
       }

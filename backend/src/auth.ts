@@ -45,6 +45,21 @@ interface AttemptRow {
 
 let googleClient: OAuth2Client | null = null;
 
+function getAllowedGoogleClientIds(): string[] {
+  loadEnvironment(true);
+
+  const values = [
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_IDS
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(values));
+}
+
 export async function registerUser(emailRaw: string, password: string): Promise<void> {
   const email = normalizeEmail(emailRaw);
   validateCredentials(email, password);
@@ -523,19 +538,18 @@ async function createAndDispatchAuthToken(options: {
 }
 
 async function verifyGoogleIdToken(idToken: string): Promise<string> {
-  loadEnvironment(true);
-  const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-  if (!clientId) {
-    throw new Error("GOOGLE_CLIENT_ID is required for Google auth.");
+  const allowedClientIds = getAllowedGoogleClientIds();
+  if (allowedClientIds.length === 0) {
+    throw new Error("GOOGLE_CLIENT_ID (or GOOGLE_CLIENT_IDS) is required for Google auth.");
   }
 
   if (!googleClient) {
-    googleClient = new OAuth2Client(clientId);
+    googleClient = new OAuth2Client();
   }
 
   const ticket = await googleClient.verifyIdToken({
     idToken,
-    audience: clientId
+    audience: allowedClientIds
   });
 
   const payload = ticket.getPayload();
