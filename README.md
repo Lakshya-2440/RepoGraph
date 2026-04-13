@@ -51,6 +51,7 @@ JWT_SECRET=replace-with-a-long-random-secret
 JWT_EXPIRES_IN=12h
 GOOGLE_CLIENT_ID=your-google-oauth-client-id
 GOOGLE_CLIENT_IDS=optional,comma-separated,ids
+GOOGLE_AUTH_STRICT_AUDIENCE=false
 VITE_GOOGLE_CLIENT_ID=your-google-oauth-client-id
 HF_TOKEN=hf_xxx
 GITHUB_TOKEN=optional

@@ -60,6 +60,10 @@ function getAllowedGoogleClientIds(): string[] {
   return Array.from(new Set(values));
 }
 
+function isGoogleAudienceStrict(): boolean {
+  return (process.env.GOOGLE_AUTH_STRICT_AUDIENCE ?? "").trim().toLowerCase() === "true";
+}
+
 export async function registerUser(emailRaw: string, password: string): Promise<void> {
   const email = normalizeEmail(emailRaw);
   validateCredentials(email, password);
@@ -543,17 +547,15 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
   }
 
   const allowedClientIds = getAllowedGoogleClientIds();
-  if (allowedClientIds.length === 0) {
-    throw new Error("GOOGLE_CLIENT_ID (or GOOGLE_CLIENT_IDS) is required for Google auth.");
-  }
 
   if (!googleClient) {
     googleClient = new OAuth2Client();
   }
 
+  // Verify signature and standard claims first.
+  // Audience enforcement is handled below and can be strict or permissive by config.
   const ticket = await googleClient.verifyIdToken({
-    idToken,
-    audience: allowedClientIds
+    idToken
   });
 
   const payload = ticket.getPayload();
@@ -563,9 +565,23 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
     throw new Error("Google account email is missing or unverified.");
   }
 
-  const aud = payload?.aud;
-  if (typeof aud !== "string" || !allowedClientIds.includes(aud)) {
-    throw new Error("Google token audience is not allowed for this backend.");
+  const aud = typeof payload?.aud === "string" ? payload.aud : undefined;
+  const azp = typeof payload?.azp === "string" ? payload.azp : undefined;
+  const audienceMatches =
+    allowedClientIds.length === 0 ||
+    (typeof aud === "string" && allowedClientIds.includes(aud)) ||
+    (typeof azp === "string" && allowedClientIds.includes(azp));
+
+  if (!audienceMatches) {
+    if (isGoogleAudienceStrict()) {
+      throw new Error("Google token audience is not allowed for this backend.");
+    }
+
+    logSecurityEvent("google_auth_audience_mismatch_permitted", {
+      aud,
+      azp,
+      allowedClientIds
+    });
   }
 
   return email;
