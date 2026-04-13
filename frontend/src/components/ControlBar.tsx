@@ -44,6 +44,10 @@ export function ControlBar(props: ControlBarProps) {
           <input
             id="repo-source"
             type="text"
+            maxLength={2048}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={props.source}
             onChange={(event) => props.onSourceChange(event.target.value)}
             placeholder="/absolute/path/to/repo or https://github.com/owner/repo"
@@ -62,6 +66,10 @@ export function ControlBar(props: ControlBarProps) {
         <input
           id="graph-search"
           type="search"
+          maxLength={200}
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
           value={props.searchQuery}
           onChange={(event) => props.onSearchQueryChange(event.target.value)}
           placeholder="file, directory, function, dependency"

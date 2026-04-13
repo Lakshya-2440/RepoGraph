@@ -9,7 +9,10 @@ env/
 # Environment and secrets
 .env
 .env.local
+.env.*
 .env.*.local
+!.env.example
+!*.env.example
 *.pem
 
 # Build and IDE
@@ -35,3 +38,5 @@ Thumbs.db
 # Graph DB and data (optional; uncomment if you don’t want to commit local DB)
 # .neo4j/
 # data/
+.vercel
+.env*.local

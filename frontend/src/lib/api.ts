@@ -6,6 +6,8 @@ import type {
   HealthResponse,
   LoginRequest,
   NodeDetailResponse,
+  RegisterResponse,
+  RequestEmailVerificationRequest,
   RequestPasswordResetRequest,
   ResetPasswordRequest,
   RegisterRequest,
@@ -20,29 +22,67 @@ import type {
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
 const AUTH_TOKEN_KEY = "repograph_auth_token";
 
+function sanitizeClientText(value: string, maxLength: number): string {
+  return value
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/[<>]/g, "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function normalizeOptionalClientText(value: string | undefined, maxLength: number): string | undefined {
+  if (typeof value === "undefined") {
+    return undefined;
+  }
+
+  const normalized = sanitizeClientText(value, maxLength);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function getAuthToken(): string | null {
-  return window.localStorage.getItem(AUTH_TOKEN_KEY);
+  const sessionToken = window.sessionStorage.getItem(AUTH_TOKEN_KEY);
+  if (sessionToken) {
+    return sessionToken;
+  }
+
+  const legacyLocalToken = window.localStorage.getItem(AUTH_TOKEN_KEY);
+  if (!legacyLocalToken) {
+    return null;
+  }
+
+  window.sessionStorage.setItem(AUTH_TOKEN_KEY, legacyLocalToken);
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  return legacyLocalToken;
 }
 
 export function setAuthToken(token: string): void {
-  window.localStorage.setItem(AUTH_TOKEN_KEY, token);
-}
-
-export function clearAuthToken(): void {
+  window.sessionStorage.setItem(AUTH_TOKEN_KEY, token);
   window.localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
-export async function register(request: RegisterRequest): Promise<AuthResponse> {
-  const payload = await requestApi<AuthResponse>("/api/auth/register", {
+export function clearAuthToken(): void {
+  window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+export async function register(request: RegisterRequest): Promise<RegisterResponse> {
+  return requestApi<RegisterResponse>("/api/auth/register", {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify(request)
   });
+}
 
-  setAuthToken(payload.token);
-  return payload;
+export async function requestEmailVerification(request: RequestEmailVerificationRequest): Promise<{ message: string }> {
+  return requestApi<{ message: string }>("/api/auth/request-email-verification", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(request)
+  }, false);
 }
 
 export async function login(request: LoginRequest): Promise<AuthResponse> {
@@ -107,7 +147,7 @@ export async function resetPassword(request: ResetPasswordRequest): Promise<{ me
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
-  return requestApi<HealthResponse>("/api/health", undefined, false);
+  return requestApi<HealthResponse>("/api/health");
 }
 
 export async function fetchCurrentAnalysis(): Promise<AnalysisResult> {
@@ -121,23 +161,23 @@ export async function analyzeSource(source: string, ref?: string): Promise<Analy
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      source,
-      ref
+      source: sanitizeClientText(source, 2048),
+      ref: normalizeOptionalClientText(ref, 256)
     })
   });
 }
 
 export async function searchNodes(query: string): Promise<SearchResult[]> {
-  const params = new URLSearchParams({ q: query });
+  const params = new URLSearchParams({ q: sanitizeClientText(query, 200) });
   return requestApi<SearchResult[]>(`/api/search?${params.toString()}`);
 }
 
 export async function fetchNodeDetails(nodeId: string): Promise<NodeDetailResponse> {
-  return requestApi<NodeDetailResponse>(`/api/nodes/${encodeURIComponent(nodeId)}`);
+  return requestApi<NodeDetailResponse>(`/api/nodes/${encodeURIComponent(sanitizeClientText(nodeId, 300))}`);
 }
 
 export async function fetchFileContent(filePath: string): Promise<{ content: string; language: string }> {
-  const params = new URLSearchParams({ path: filePath });
+  const params = new URLSearchParams({ path: sanitizeClientText(filePath, 1024) });
   return requestApi<{ content: string; language: string }>(`/api/file-content?${params.toString()}`);
 }
 
@@ -148,7 +188,7 @@ export async function askRepoQuestion(question: string, history?: ChatMessage[])
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      question,
+      question: sanitizeClientText(question, 2000),
       history
     })
   });

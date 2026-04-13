@@ -40,6 +40,26 @@ export function isAnalysisRunning(userId: number): boolean {
   return runningAnalysisByUser.has(userId);
 }
 
+export async function hasAnalysisForUser(userId: number): Promise<boolean> {
+  if (currentAnalysisByUser.has(userId)) {
+    return true;
+  }
+
+  const db = getDbPool();
+  const result = await db.query<{ exists: boolean }>(
+    `
+      SELECT EXISTS(
+        SELECT 1
+        FROM analysis_runs
+        WHERE user_id = $1
+      ) AS exists
+    `,
+    [userId]
+  );
+
+  return result.rows[0]?.exists === true;
+}
+
 export async function setCurrentAnalysis(userId: number, analysis: AnalysisResult): Promise<void> {
   currentAnalysisByUser.set(userId, analysis);
 

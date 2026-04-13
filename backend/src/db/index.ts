@@ -14,13 +14,27 @@ export function getDbPool(): Pool {
       throw new Error("DATABASE_URL is required. Configure Neon connection string in environment.");
     }
 
+    const ssl = shouldUseSsl(connectionString) ? { rejectUnauthorized: true } : false;
+
     pool = new Pool({
       connectionString,
-      ssl: { rejectUnauthorized: false }
+      ssl
     });
   }
 
   return pool;
+}
+
+function shouldUseSsl(connectionString: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    return true;
+  }
+
+  const host = url.hostname.toLowerCase();
+  return !(host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".local"));
 }
 
 export async function initializeDatabase(): Promise<void> {

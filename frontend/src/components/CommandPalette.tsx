@@ -157,6 +157,10 @@ export function CommandPalette({ analysis, onFocusNode, onSwitchView, onClose }:
             ref={inputRef}
             className="cp-input"
             type="text"
+            maxLength={200}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search nodes, switch views, run actions..."

@@ -232,6 +232,10 @@ export interface AuthResponse {
   user: AuthUser;
 }
 
+export interface RegisterResponse {
+  message: string;
+}
+
 export interface RegisterRequest {
   email: string;
   password: string;
@@ -244,6 +248,10 @@ export interface LoginRequest {
 
 export interface VerifyEmailRequest {
   token: string;
+}
+
+export interface RequestEmailVerificationRequest {
+  email: string;
 }
 
 export interface RequestPasswordResetRequest {

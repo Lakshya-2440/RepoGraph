@@ -195,11 +195,21 @@ export async function analyzeRepository(options: AnalyzeOptions): Promise<Analys
 
 async function materializeSource(options: AnalyzeOptions): Promise<MaterializedSource> {
   const normalizedSource = options.source.trim();
+  const normalizedRef = options.ref?.trim();
+
+  if (normalizedSource.length === 0 || normalizedSource.length > 2048) {
+    throw new Error("Source must be a non-empty path or GitHub URL.");
+  }
+
+  if (normalizedRef && !isSafeGitRef(normalizedRef)) {
+    throw new Error("Ref contains invalid characters.");
+  }
+
   const localPath = path.resolve(expandHomeDirectory(normalizedSource));
 
   if (await pathExists(localPath)) {
     const headSha = await getGitValue(localPath, ["rev-parse", "HEAD"]);
-    const ref = options.ref ?? (await getGitValue(localPath, ["rev-parse", "--abbrev-ref", "HEAD"]));
+    const ref = normalizedRef ?? (await getGitValue(localPath, ["rev-parse", "--abbrev-ref", "HEAD"]));
 
     return {
       source: normalizedSource,
@@ -217,7 +227,12 @@ async function materializeSource(options: AnalyzeOptions): Promise<MaterializedS
     throw new Error("Source must be an existing local path or a GitHub repository URL.");
   }
 
-  const cloned = await cloneGitHubRepository(github.url, github.owner, github.repo, options.ref ?? github.ref);
+  const requestedRef = normalizedRef ?? github.ref;
+  if (requestedRef && !isSafeGitRef(requestedRef)) {
+    throw new Error("Ref contains invalid characters.");
+  }
+
+  const cloned = await cloneGitHubRepository(github.url, github.owner, github.repo, requestedRef);
 
   return {
     source: normalizedSource,
@@ -1416,6 +1431,14 @@ function parseGitHubUrl(source: string): { owner: string; repo: string; ref?: st
     const repo = parts[1].replace(/\.git$/, "");
     const ref = parts[2] === "tree" ? parts.slice(3).join("/") : undefined;
 
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo)) {
+      return null;
+    }
+
+    if (ref && !isSafeGitRef(ref)) {
+      return null;
+    }
+
     return {
       owner,
       repo,
@@ -1425,6 +1448,30 @@ function parseGitHubUrl(source: string): { owner: string; repo: string; ref?: st
   } catch {
     return null;
   }
+}
+
+function isSafeGitRef(value: string): boolean {
+  if (value.length === 0 || value.length > 256) {
+    return false;
+  }
+
+  if (
+    value.includes("..") ||
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.includes("\\") ||
+    value.startsWith("-") ||
+    value.endsWith(".") ||
+    value.includes("@")
+  ) {
+    return false;
+  }
+
+  if (/[\s~^:?*\[\]{}]/.test(value)) {
+    return false;
+  }
+
+  return /^[A-Za-z0-9._/-]+$/.test(value);
 }
 
 async function cloneGitHubRepository(

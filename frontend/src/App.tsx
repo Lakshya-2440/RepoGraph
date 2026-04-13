@@ -24,7 +24,9 @@ import {
   getAuthToken,
   login,
   loginWithGoogle,
+  requestEmailVerification,
   register,
+  verifyEmail,
   searchNodes
 } from "./lib/api";
 import { formatDate } from "./lib/format";
@@ -38,7 +40,10 @@ declare global {
             client_id: string;
             callback: (response: { credential?: string }) => void;
           }) => void;
-          renderButton: (parent: HTMLElement, options: { theme?: string; size?: string; width?: number }) => void;
+          renderButton: (
+            parent: HTMLElement,
+            options: { theme?: string; size?: string; width?: number; shape?: "rectangular" | "pill" | "circle" | "square" }
+          ) => void;
         };
       };
     };
@@ -68,6 +73,7 @@ export function App() {
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authInfo, setAuthInfo] = useState<string | null>(null);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
   const [googleButtonVisible, setGoogleButtonVisible] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
@@ -93,6 +99,45 @@ export function App() {
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const generatedLabel = analysis ? formatDate(analysis.summary.generatedAt) : undefined;
+
+  useEffect(() => {
+    const currentPath = window.location.pathname;
+    const params = new URLSearchParams(window.location.search);
+    const verificationToken = params.get("token")?.trim();
+
+    if (currentPath !== "/verify-email" || !verificationToken) {
+      return;
+    }
+
+    let cancelled = false;
+    setAuthSubmitting(true);
+    setAuthError(null);
+
+    void verifyEmail({ token: verificationToken })
+      .then((result) => {
+        if (cancelled) {
+          return;
+        }
+
+        setAuthMode("login");
+        setAuthInfo(result.message);
+      })
+      .catch((caughtError) => {
+        if (!cancelled) {
+          setAuthError(caughtError instanceof Error ? caughtError.message : "Email verification failed.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuthSubmitting(false);
+          window.history.replaceState({}, "", "/");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,6 +232,7 @@ export function App() {
         googleId.renderButton(mountPoint, {
           theme: "outline",
           size: "large",
+          shape: "pill",
           width: 320
         });
 
@@ -284,13 +330,15 @@ export function App() {
           setSource(health.defaultSource);
         }
 
-        if (health.hasAnalysis) {
+        try {
           const currentAnalysis = await fetchCurrentAnalysis();
           if (cancelled) {
             return;
           }
 
           hydrateAnalysis(currentAnalysis);
+        } catch {
+          // No prior analysis for this user is expected on first login.
         }
       } catch {
         return;
@@ -499,17 +547,42 @@ export function App() {
 
     try {
       if (authMode === "register") {
-        const result = await register({ email: authEmail.trim(), password: authPassword });
-        setAuthUser(result.user);
-        setAuthInfo(null);
+        const normalizedEmail = authEmail.trim().toLowerCase();
+        const result = await register({ email: normalizedEmail, password: authPassword });
+        setPendingVerificationEmail(normalizedEmail);
+        setAuthMode("login");
+        setAuthInfo(result.message);
       } else {
         const result = await login({ email: authEmail.trim(), password: authPassword });
         setAuthUser(result.user);
         setAuthInfo(null);
+        setPendingVerificationEmail(null);
       }
       setAuthPassword("");
     } catch (caughtError) {
-      setAuthError(caughtError instanceof Error ? caughtError.message : "Authentication failed.");
+      const message = caughtError instanceof Error ? caughtError.message : "Authentication failed.";
+      setAuthError(message);
+
+      if (authMode === "login" && /verify your email/i.test(message)) {
+        setPendingVerificationEmail(authEmail.trim().toLowerCase());
+      }
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (!pendingVerificationEmail) {
+      return;
+    }
+
+    setAuthSubmitting(true);
+    setAuthError(null);
+    try {
+      const response = await requestEmailVerification({ email: pendingVerificationEmail });
+      setAuthInfo(response.message);
+    } catch (caughtError) {
+      setAuthError(caughtError instanceof Error ? caughtError.message : "Unable to resend verification email.");
     } finally {
       setAuthSubmitting(false);
     }
@@ -543,7 +616,6 @@ export function App() {
         <section className="auth-shell panel">
           <p className="panel-title">Secure Access</p>
           <h1>{authMode === "register" ? "Create your workspace account" : "Sign in to RepoGraph"}</h1>
-          <p className="auth-subtitle">Your projects and AI activity are stored per account.</p>
 
           <div className="auth-google-wrap">
             <div ref={googleButtonRef} />
@@ -564,6 +636,10 @@ export function App() {
                 onChange={(event) => setAuthEmail(event.target.value)}
                 placeholder="you@company.com"
                 autoComplete="email"
+                maxLength={320}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 required
               />
             </label>
@@ -577,6 +653,7 @@ export function App() {
                 placeholder="At least 8 characters"
                 autoComplete={authMode === "register" ? "new-password" : "current-password"}
                 minLength={8}
+                maxLength={128}
                 required
               />
             </label>
@@ -596,12 +673,29 @@ export function App() {
               className="auth-switch"
               onClick={() => {
                 setAuthError(null);
+                setAuthInfo(null);
                 setAuthMode((current) => (current === "login" ? "register" : "login"));
               }}
             >
               {authMode === "register" ? "Sign in" : "Create one"}
             </button>
           </div>
+
+          {pendingVerificationEmail && (
+            <div className="auth-switcher">
+              <span>Need a new verification email?</span>
+              <button
+                type="button"
+                className="auth-switch"
+                onClick={() => {
+                  void handleResendVerification();
+                }}
+                disabled={authSubmitting}
+              >
+                Resend
+              </button>
+            </div>
+          )}
         </section>
       </main>
     );

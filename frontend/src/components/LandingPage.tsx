@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import "../landing.css";
 
 const GRAPH_COLORS = [
@@ -10,35 +10,43 @@ const FEATURES = [
   {
     icon: "\u25CE",
     title: "Living Force Graph",
-    description: "Interactive force-directed visualization with drag, zoom, spotlight mode, and pinning. Every connection in your codebase rendered in real time."
-  },
-  {
-    icon: "\u2B21",
-    title: "Full AST Extraction",
-    description: "Functions, classes, methods, variables, imports, types \u2014 parsed from every JS/TS file via Babel with full call-graph and inheritance edges."
+    description: "Interactive force-directed visualization with drag, zoom, spotlight mode, and pinning. Explore architecture, ownership, and dependency relationships in real time."
   },
   {
     icon: "\u25C8",
+    title: "AI + RAG Repo Chat",
+    description: "Ask natural language questions about the repository. Retrieval-augmented context pulls relevant files/snippets so answers are grounded in actual code."
+  },
+  {
+    icon: "\u2B21",
+    title: "AI Insights + Code-Origin Estimation",
+    description: "Generate architecture insights, risk signals, and estimated AI-generated code percentage with confidence and supporting signals."
+  },
+  {
+    icon: "\u25C9",
+    title: "Full AST & Graph Extraction",
+    description: "Functions, classes, methods, variables, imports, and types \u2014 parsed from JS/TS with call-graph and inheritance edges automatically linked."
+  },
+  {
+    icon: "\u25C7",
     title: "Git Archaeology",
     description: "Up to 120 commits traced. Every file mapped to authors, timestamps, and change frequency. Instantly see who owns what code."
   },
   {
-    icon: "\u25C7",
-    title: "Dependency Intelligence",
-    description: "Production and dev dependencies mapped. Import chains fully resolved. Circular references, orphan modules, and bottlenecks surfaced."
-  },
-  {
-    icon: "\u25C9",
-    title: "AI Mini-Agents",
-    description: "Rule-based insight engines that detect bottlenecks, hubs, orphans, hot files, stale code, missing tests, and ownership patterns."
-  },
-  {
     icon: "\u2B22",
-    title: "GitHub Integration",
-    description: "Issues, pull requests, comments, stars, forks \u2014 pulled from the GitHub API and woven directly into the graph topology."
+    title: "Secure Multi-User Workspace",
+    description: "Email/password and Google auth, verified accounts, expiring sessions, password reset flows, and per-user data isolation with ownership enforcement."
+  },
+  {
+    icon: "\u25C6",
+    title: "Abuse Protection + Security Telemetry",
+    description: "Rate limits across auth/API/AI routes, HTTPS enforcement, and structured security logs for auth attempts, API errors, and unusual traffic spikes."
   }
 ];
 
+const FEATURE_SURROUND = FEATURES.slice(0, 6);
+const FEATURE_LEFT = FEATURE_SURROUND.slice(0, 3);
+const FEATURE_RIGHT = FEATURE_SURROUND.slice(3, 6);
 const STEPS = [
   {
     number: "01",
@@ -114,6 +122,7 @@ function createParticles(width: number, height: number): Particle[] {
 
 export function LandingPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const particlesRef = useRef<Particle[]>([]);
   const [revealedSections, setRevealedSections] = useState<Set<string>>(new Set());
 
@@ -137,6 +146,40 @@ export function LandingPage() {
   }, []);
 
   useEffect(() => {
+    const root = rootRef.current;
+    if (!root) {
+      return;
+    }
+
+    let raf = 0;
+    let targetX = 0.5;
+    let targetY = 0.25;
+    let smoothX = targetX;
+    let smoothY = targetY;
+
+    const update = () => {
+      smoothX += (targetX - smoothX) * 0.08;
+      smoothY += (targetY - smoothY) * 0.08;
+      root.style.setProperty("--lp-mx", `${(smoothX * 100).toFixed(2)}%`);
+      root.style.setProperty("--lp-my", `${(smoothY * 100).toFixed(2)}%`);
+      raf = window.requestAnimationFrame(update);
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      targetX = event.clientX / window.innerWidth;
+      targetY = event.clientY / window.innerHeight;
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    raf = window.requestAnimationFrame(update);
+
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -150,7 +193,6 @@ export function LandingPage() {
       const h = rect?.height ?? 500;
       canvas.width = w * dpr;
       canvas.height = h * dpr;
-      canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       particlesRef.current = createParticles(w, h);
@@ -209,12 +251,6 @@ export function LandingPage() {
         ctx.fill();
       }
 
-      const vignette = ctx.createRadialGradient(w / 2, h / 2, w * 0.2, w / 2, h / 2, w * 0.56);
-      vignette.addColorStop(0, "rgba(14, 16, 18, 0)");
-      vignette.addColorStop(1, "rgba(14, 16, 18, 0.92)");
-      ctx.fillStyle = vignette;
-      ctx.fillRect(0, 0, w, h);
-
       frame = requestAnimationFrame(animate);
     };
 
@@ -234,8 +270,26 @@ export function LandingPage() {
     window.dispatchEvent(new PopStateEvent("popstate"));
   };
 
+  const navigateToSection = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    const sectionId = event.currentTarget.getAttribute("data-scroll-to");
+
+    if (!sectionId) {
+      return;
+    }
+
+    const target = document.getElementById(sectionId);
+    if (!target) {
+      return;
+    }
+
+    const navOffset = 96;
+    const top = target.getBoundingClientRect().top + window.scrollY - navOffset;
+    window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  };
+
   return (
-    <div className="lp">
+    <div className="lp" ref={rootRef}>
       <div className="lp-grain" />
       <div className="lp-grid-bg" />
 
@@ -249,9 +303,15 @@ export function LandingPage() {
           <span className="lp-logo-text">RepoGraph</span>
         </div>
         <div className="lp-nav-links">
-          <a href="#features">Features</a>
-          <a href="#workflow">How it works</a>
-          <a href="#coverage">Coverage</a>
+          <a href="#features" data-scroll-to="features" onClick={navigateToSection}>
+            Features
+          </a>
+          <a href="#workflow" data-scroll-to="workflow" onClick={navigateToSection}>
+            How it works
+          </a>
+          <a href="#coverage" data-scroll-to="coverage" onClick={navigateToSection}>
+            Coverage
+          </a>
           <a href="/app" onClick={navigateToApp} className="lp-nav-cta">
             Launch App <span className="lp-arrow">&rarr;</span>
           </a>
@@ -260,72 +320,89 @@ export function LandingPage() {
 
       <section className="lp-hero">
         <div className="lp-hero-content">
-          <div className="lp-hero-badge">
-            <span className="lp-badge-dot" />
-            Open-source repository intelligence
-          </div>
           <h1 className="lp-hero-title">
-            See <em>everything</em>
-            <br />
-            inside your repository
+            <span>See <em>everything</em></span>
+            <span>inside your repository</span>
           </h1>
           <p className="lp-hero-sub">
-            Map every file, function, dependency, commit, and contributor into one living, searchable knowledge graph.
-            Understand any codebase in seconds.
+            Explore your codebase with a bold graph-native view of files, functions, dependencies, commits, and
+            contributors - all in one place.
           </p>
           <div className="lp-hero-actions">
             <a href="/app" onClick={navigateToApp} className="lp-btn lp-btn-primary">
-              Launch App
+              Start Building
               <span className="lp-btn-shine" />
             </a>
-            <a href="#features" className="lp-btn lp-btn-ghost">
-              Explore features
+            <a href="https://github.com/lakshyagupta" target="_blank" rel="noreferrer" className="lp-btn lp-btn-ghost">
+              View GitHub
             </a>
-          </div>
-        </div>
-
-        <div className="lp-hero-visual">
-          <div className="lp-graph-container">
-            <canvas ref={canvasRef} />
-            <div className="lp-graph-badge lp-graph-badge-1">
-              <strong>16</strong>
-              <span>node types</span>
-            </div>
-            <div className="lp-graph-badge lp-graph-badge-2">
-              <strong>19</strong>
-              <span>relationships</span>
-            </div>
-            <div className="lp-graph-badge lp-graph-badge-3">
-              <strong>&lt;2s</strong>
-              <span>analysis</span>
-            </div>
           </div>
         </div>
       </section>
 
-      <section className="lp-section" id="features" data-reveal="features">
+      <section className="lp-section lp-section-feature-orbit" id="features" data-reveal="features">
         <div className={`lp-section-inner ${isRevealed("features") ? "revealed" : ""}`}>
-          <div className="lp-section-header">
+          <div className="lp-section-header lp-section-header-centered">
             <span className="lp-section-label">01 &mdash; Capabilities</span>
             <h2 className="lp-section-title">
-              One graph.
+              One graph core.
               <br />
-              Complete understanding.
+              Every workflow connected.
             </h2>
             <p className="lp-section-sub">
-              Every layer of your codebase &mdash; structure, code, dependencies, git history, and GitHub metadata
-              &mdash; unified in a single interactive visualization.
+              Your graph simulation stays at the center while surrounding modules give instant access to AI chat,
+              extraction, history, and ownership intelligence.
             </p>
           </div>
 
-          <div className="lp-feature-grid">
-            {FEATURES.map((feature) => (
-              <div key={feature.title} className="lp-feature-card">
-                <div className="lp-feature-icon">{feature.icon}</div>
-                <h3>{feature.title}</h3>
-                <p>{feature.description}</p>
+          <div className="lp-feature-orbit">
+            <div className="lp-feature-rails" />
+
+            <div className="lp-feature-column lp-feature-column-left">
+              {FEATURE_LEFT.map((feature, index) => (
+                <article
+                  key={feature.title}
+                  className="lp-feature-side-card"
+                  style={{ ["--feature-side-index" as string]: index } as CSSProperties}
+                >
+                  <div className="lp-feature-side-icon">{feature.icon}</div>
+                  <h3>{feature.title}</h3>
+                  <p>{feature.description}</p>
+                </article>
+              ))}
+            </div>
+
+            <div className="lp-feature-hub">
+              <div className="lp-graph-container">
+                <canvas ref={canvasRef} />
+                <div className="lp-graph-badge lp-graph-badge-1">
+                  <strong>16</strong>
+                  <span>node types</span>
+                </div>
+                <div className="lp-graph-badge lp-graph-badge-2">
+                  <strong>19</strong>
+                  <span>relationships</span>
+                </div>
+                <div className="lp-graph-badge lp-graph-badge-3">
+                  <strong>&lt;2s</strong>
+                  <span>analysis</span>
+                </div>
               </div>
-            ))}
+            </div>
+
+            <div className="lp-feature-column lp-feature-column-right">
+              {FEATURE_RIGHT.map((feature, index) => (
+                <article
+                  key={feature.title}
+                  className="lp-feature-side-card"
+                  style={{ ["--feature-side-index" as string]: index } as CSSProperties}
+                >
+                  <div className="lp-feature-side-icon">{feature.icon}</div>
+                  <h3>{feature.title}</h3>
+                  <p>{feature.description}</p>
+                </article>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -342,8 +419,12 @@ export function LandingPage() {
           </div>
 
           <div className="lp-steps">
-            {STEPS.map((step) => (
-              <div key={step.number} className="lp-step">
+            {STEPS.map((step, index) => (
+              <div
+                key={step.number}
+                className="lp-step"
+                style={{ ["--step-index" as string]: index } as CSSProperties}
+              >
                 <div className="lp-step-number">{step.number}</div>
                 <div className="lp-step-content">
                   <h3>{step.title}</h3>
@@ -371,8 +452,12 @@ export function LandingPage() {
           </div>
 
           <div className="lp-node-grid">
-            {NODE_TYPE_SHOWCASE.map((item) => (
-              <div key={item.type} className="lp-node-card">
+            {NODE_TYPE_SHOWCASE.map((item, index) => (
+              <div
+                key={item.type}
+                className="lp-node-card"
+                style={{ ["--node-index" as string]: index } as CSSProperties}
+              >
                 <div className="lp-node-dot" style={{ backgroundColor: item.color, boxShadow: `0 0 10px ${item.color}` }} />
                 <div className="lp-node-info">
                   <strong>{item.type}</strong>

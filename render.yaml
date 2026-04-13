@@ -7,7 +7,7 @@ services:
     branch: main
     buildCommand: npm ci --include=dev && npm run build:backend
     startCommand: npm run start
-    healthCheckPath: /api/health
+    healthCheckPath: /api/ready
     autoDeploy: true
     envVars:
       - key: NODE_ENV
@@ -21,7 +21,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
-        value: 7d
+        value: 12h
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: HF_TOKEN

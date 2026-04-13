@@ -7,12 +7,23 @@ import { OAuth2Client } from "google-auth-library";
 import type { AuthUser } from "../../shared/src/index.js";
 import { loadEnvironment } from "./config/env.js";
 import { getDbPool } from "./db/index.js";
+import { getClientIp, logSecurityEvent } from "./logging/security.js";
 
 const PASSWORD_MIN_LENGTH = 8;
+const EMAIL_VERIFICATION_TOKEN_TTL_HOURS = 24;
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = 30;
 const LOGIN_WINDOW_MINUTES = 15;
 const LOGIN_MAX_ATTEMPTS = 5;
 const LOGIN_LOCK_MINUTES = 15;
+
+export class AuthError extends Error {
+  statusCode: number;
+
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
 
 export interface AuthedRequest extends Request {
   user?: AuthUser;
@@ -34,32 +45,47 @@ interface AttemptRow {
 
 let googleClient: OAuth2Client | null = null;
 
-export async function registerUser(emailRaw: string, password: string): Promise<AuthUser> {
+export async function registerUser(emailRaw: string, password: string): Promise<void> {
   const email = normalizeEmail(emailRaw);
   validateCredentials(email, password);
 
   const db = getDbPool();
   const passwordHash = await bcrypt.hash(password, 12);
 
-  const result = await db.query<{ id: string; email: string; created_at: string }>(
-    `
-      INSERT INTO users(email, password_hash, email_verified_at)
-      VALUES($1, $2, now())
-      RETURNING id, email, created_at
-    `,
-    [email, passwordHash]
-  );
+  let userId: number | null = null;
+  try {
+    const result = await db.query<{ id: string }>(
+      `
+        INSERT INTO users(email, password_hash, email_verified_at)
+        VALUES($1, $2, NULL)
+        RETURNING id
+      `,
+      [email, passwordHash]
+    );
 
-  const row = result.rows[0];
-  if (!row) {
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error("Failed to create user.");
+    }
+    userId = Number(row.id);
+  } catch (error) {
+    if (isDuplicateEmailError(error)) {
+      throw new AuthError("Account already in use", 409);
+    }
+
+    throw error;
+  }
+
+  if (!userId) {
     throw new Error("Failed to create user.");
   }
 
-  return {
-    id: Number(row.id),
-    email: row.email,
-    createdAt: row.created_at
-  };
+  await createAndDispatchAuthToken({
+    userId,
+    email,
+    purpose: "verify_email",
+    ttlMs: EMAIL_VERIFICATION_TOKEN_TTL_HOURS * 60 * 60 * 1000
+  });
 }
 
 export async function loginUser(emailRaw: string, password: string, attemptKey: string): Promise<AuthUser> {
@@ -71,7 +97,7 @@ export async function loginUser(emailRaw: string, password: string, attemptKey: 
   const db = getDbPool();
   const result = await db.query<UserRow>(
     `
-      SELECT id, email, password_hash, created_at
+      SELECT id, email, password_hash, email_verified_at, created_at
       FROM users
       WHERE email = $1
       LIMIT 1
@@ -89,6 +115,10 @@ export async function loginUser(emailRaw: string, password: string, attemptKey: 
   if (!matches) {
     await registerFailedLoginAttempt(attemptKey);
     throw new Error("Invalid email or password.");
+  }
+
+  if (!user.email_verified_at) {
+    throw new AuthError("Please verify your email before signing in.", 403);
   }
 
   await clearLoginAttempts(attemptKey);
@@ -166,6 +196,19 @@ export async function requestPasswordReset(emailRaw: string): Promise<void> {
 
   const user = result.rows[0];
   if (!user) {
+    return;
+  }
+
+  const verification = await db.query<{ email_verified_at: string | null }>(
+    `
+      SELECT email_verified_at
+      FROM users
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [user.id]
+  );
+  if (!verification.rows[0]?.email_verified_at) {
     return;
   }
 
@@ -295,7 +338,7 @@ export function issueAuthToken(user: AuthUser): string {
     ? Number.isFinite(Number(configuredExpiry))
       ? Number(configuredExpiry)
       : (configuredExpiry as jwt.SignOptions["expiresIn"])
-    : "7d";
+    : "12h";
   const issuer = process.env.JWT_ISSUER?.trim() || "repograph-auth";
   const audience = process.env.JWT_AUDIENCE?.trim() || "repograph-client";
 
@@ -311,6 +354,15 @@ export function issueAuthToken(user: AuthUser): string {
       jwtid: randomUUID()
     }
   );
+}
+
+function isDuplicateEmailError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const pgError = error as { code?: string; constraint?: string };
+  return pgError.code === "23505" && pgError.constraint === "users_email_key";
 }
 
 export async function getUserById(userId: number): Promise<AuthUser | null> {
@@ -350,6 +402,12 @@ export async function requireAuth(request: AuthedRequest, response: Response, ne
 
     const header = request.headers.authorization;
     if (!header || !header.startsWith("Bearer ")) {
+      logSecurityEvent("auth_guard_denied", {
+        ip: getClientIp(request),
+        method: request.method,
+        path: request.path,
+        reason: "missing_bearer_token"
+      });
       response.status(401).json({ error: "Authentication required." });
       return;
     }
@@ -369,13 +427,25 @@ export async function requireAuth(request: AuthedRequest, response: Response, ne
 
     const user = await getUserById(userId);
     if (!user) {
+      logSecurityEvent("auth_guard_denied", {
+        ip: getClientIp(request),
+        method: request.method,
+        path: request.path,
+        reason: "unknown_user"
+      });
       response.status(401).json({ error: "User no longer exists." });
       return;
     }
 
     request.user = user;
     next();
-  } catch {
+  } catch (error) {
+    logSecurityEvent("auth_guard_failed", {
+      ip: getClientIp(request),
+      method: request.method,
+      path: request.path,
+      reason: error instanceof Error ? error.message : "invalid_or_expired_token"
+    });
     response.status(401).json({ error: "Invalid or expired auth token." });
   }
 }
@@ -390,6 +460,36 @@ export function getLoginAttemptKey(request: Request, emailRaw: string): string {
   return `${rawIp.toLowerCase()}::${email}`;
 }
 
+export async function requestEmailVerification(emailRaw: string): Promise<void> {
+  const email = normalizeEmail(emailRaw);
+  if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+    return;
+  }
+
+  const db = getDbPool();
+  const result = await db.query<{ id: string; email: string; email_verified_at: string | null }>(
+    `
+      SELECT id, email, email_verified_at
+      FROM users
+      WHERE email = $1
+      LIMIT 1
+    `,
+    [email]
+  );
+
+  const user = result.rows[0];
+  if (!user || user.email_verified_at) {
+    return;
+  }
+
+  await createAndDispatchAuthToken({
+    userId: Number(user.id),
+    email: user.email,
+    purpose: "verify_email",
+    ttlMs: EMAIL_VERIFICATION_TOKEN_TTL_HOURS * 60 * 60 * 1000
+  });
+}
+
 async function createAndDispatchAuthToken(options: {
   userId: number;
   email: string;
@@ -400,6 +500,16 @@ async function createAndDispatchAuthToken(options: {
   const rawToken = randomBytes(32).toString("hex");
   const tokenHash = hashToken(rawToken);
   const expiresAt = new Date(Date.now() + options.ttlMs).toISOString();
+
+  await db.query(
+    `
+      DELETE FROM auth_tokens
+      WHERE user_id = $1
+        AND purpose = $2
+        AND consumed_at IS NULL
+    `,
+    [options.userId, options.purpose]
+  );
 
   await db.query(
     `
@@ -440,13 +550,12 @@ async function verifyGoogleIdToken(idToken: string): Promise<string> {
 
 async function dispatchAuthEmail(email: string, purpose: "verify_email" | "password_reset", token: string): Promise<void> {
   loadEnvironment(true);
-  const baseUrl = process.env.APP_BASE_URL?.trim() || `http://localhost:${process.env.PORT ?? "4000"}`;
   const pathName = purpose === "verify_email" ? "/verify-email" : "/reset-password";
-  const link = `${baseUrl}${pathName}?token=${encodeURIComponent(token)}`;
+  const tokenFingerprint = hashToken(token).slice(0, 12);
 
   // In production integrate a provider (SES, SendGrid, etc.).
-  // Logging keeps tokens server-side and avoids exposing secrets to frontend code.
-  console.log(`[auth-email] purpose=${purpose} to=${email} link=${link}`);
+  // Never log raw tokens; fingerprint helps correlation without exposing credentials.
+  console.log(`[auth-email] purpose=${purpose} to=${email} path=${pathName} tokenFingerprint=${tokenFingerprint}`);
 }
 
 function hashToken(rawToken: string): string {
