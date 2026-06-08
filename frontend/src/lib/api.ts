@@ -27,19 +27,8 @@ function resolveApiBase(): string {
     return RAW_API_BASE.replace(/\/+$/, "");
   }
 
-  // Local dev works with Vite proxy ("/api" -> localhost:4000).
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname.toLowerCase();
-    const isLocal = host === "localhost" || host === "127.0.0.1";
-    if (isLocal) {
-      return "";
-    }
-  }
-
-  // In hosted environments, missing VITE_API_BASE typically means API calls hit static hosting.
-  throw new Error(
-    "Frontend API is not configured. Set VITE_API_BASE to your backend URL (for example https://your-backend.onrender.com)."
-  );
+  // Same-origin works for local Vite proxy and Render, where Express serves frontend + /api.
+  return "";
 }
 
 function sanitizeClientText(value: string, maxLength: number): string {

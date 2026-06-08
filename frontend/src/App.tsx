@@ -29,26 +29,13 @@ import {
   verifyEmail,
   searchNodes
 } from "./lib/api";
+import {
+  getCurrentFirebaseIdToken,
+  isFirebaseAuthConfigured,
+  signInWithGoogleFirebase,
+  signOutFromFirebase
+} from "./lib/firebase";
 import { formatDate } from "./lib/format";
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        id: {
-          initialize: (options: {
-            client_id: string;
-            callback: (response: { credential?: string }) => void;
-          }) => void;
-          renderButton: (
-            parent: HTMLElement,
-            options: { theme?: string; size?: string; width?: number; shape?: "rectangular" | "pill" | "circle" | "square" }
-          ) => void;
-        };
-      };
-    };
-  }
-}
 
 type AppView = "graph" | "explorer" | "stats" | "insights" | "dependencies" | "contributors";
 
@@ -62,7 +49,6 @@ const VIEW_LABELS: Record<AppView, string> = {
 };
 
 const DEFAULT_SOURCE = "";
-const GOOGLE_GSI_SCRIPT_SRC = "https://accounts.google.com/gsi/client";
 
 export function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -75,7 +61,6 @@ export function App() {
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
-  const [googleButtonVisible, setGoogleButtonVisible] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [source, setSource] = useState(DEFAULT_SOURCE);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -95,7 +80,6 @@ export function App() {
   const [prefetchedAiInsightsError, setPrefetchedAiInsightsError] = useState<string | null>(null);
   const mainColumnRef = useRef<HTMLElement | null>(null);
   const graphSectionRef = useRef<HTMLDivElement | null>(null);
-  const googleButtonRef = useRef<HTMLDivElement | null>(null);
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const generatedLabel = analysis ? formatDate(analysis.summary.generatedAt) : undefined;
@@ -145,8 +129,22 @@ export function App() {
     const bootstrapAuth = async () => {
       const token = getAuthToken();
       if (!token) {
-        if (!cancelled) {
-          setAuthLoading(false);
+        try {
+          const firebaseIdToken = await getCurrentFirebaseIdToken();
+          if (!firebaseIdToken) {
+            return;
+          }
+
+          const result = await loginWithGoogle({ idToken: firebaseIdToken });
+          if (!cancelled) {
+            setAuthUser(result.user);
+          }
+        } catch {
+          clearAuthToken();
+        } finally {
+          if (!cancelled) {
+            setAuthLoading(false);
+          }
         }
         return;
       }
@@ -170,151 +168,6 @@ export function App() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    if (authUser) {
-      return;
-    }
-
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
-    if (!clientId) {
-      setGoogleAuthError("Google sign-in is not configured for this environment.");
-      setGoogleButtonVisible(false);
-      return;
-    }
-
-    setGoogleAuthError(null);
-    setGoogleButtonVisible(false);
-    let cancelled = false;
-
-    const tryRenderGoogleButton = (): boolean => {
-      const mountPoint = googleButtonRef.current;
-      const googleId = window.google?.accounts?.id;
-
-      if (!mountPoint || !googleId) {
-        return false;
-      }
-
-      try {
-        mountPoint.innerHTML = "";
-        googleId.initialize({
-          client_id: clientId,
-          callback: ({ credential }) => {
-            if (!credential) {
-              setGoogleAuthError("Google did not return a valid credential.");
-              setAuthError("Google authentication failed.");
-              return;
-            }
-
-            if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(credential)) {
-              setGoogleAuthError("Google returned an invalid credential. Check OAuth setup and retry.");
-              setAuthError("Google authentication failed.");
-              return;
-            }
-
-            setAuthSubmitting(true);
-            setAuthError(null);
-            setAuthInfo(null);
-
-            void loginWithGoogle({ idToken: credential })
-              .then((result) => {
-                if (!cancelled) {
-                  setAuthUser(result.user);
-                }
-              })
-              .catch((caughtError) => {
-                if (!cancelled) {
-                  setAuthError(caughtError instanceof Error ? caughtError.message : "Google sign-in failed.");
-                }
-              })
-              .finally(() => {
-                if (!cancelled) {
-                  setAuthSubmitting(false);
-                }
-              });
-          }
-        });
-
-        googleId.renderButton(mountPoint, {
-          theme: "outline",
-          size: "large",
-          shape: "pill",
-          width: 320
-        });
-
-        const hasButton = mountPoint.childElementCount > 0;
-        setGoogleButtonVisible(hasButton);
-        setGoogleAuthError(
-          hasButton ? null : "Google button did not render. Check OAuth Authorized JavaScript origins for this exact URL."
-        );
-        return hasButton;
-      } catch {
-        setGoogleAuthError("Google sign-in failed to initialize. Verify Google OAuth client origins and browser privacy settings.");
-        setGoogleButtonVisible(false);
-        return false;
-      }
-    };
-
-    const existingScript = document.querySelector(`script[src=\"${GOOGLE_GSI_SCRIPT_SRC}\"]`) as HTMLScriptElement | null;
-    let sdkPollInterval: number | null = null;
-    let sdkTimeout: number | null = null;
-
-    if (!existingScript && !window.google?.accounts?.id) {
-      const script = document.createElement("script");
-      script.src = GOOGLE_GSI_SCRIPT_SRC;
-      script.async = true;
-      script.defer = true;
-      script.onerror = () => {
-        if (!cancelled) {
-          setGoogleAuthError("Google sign-in is blocked in this browser. Disable blockers and retry.");
-          setGoogleButtonVisible(false);
-        }
-      };
-      document.head.appendChild(script);
-    }
-
-    sdkPollInterval = window.setInterval(() => {
-      if (cancelled) {
-        return;
-      }
-
-      if (tryRenderGoogleButton()) {
-        if (sdkPollInterval !== null) {
-          window.clearInterval(sdkPollInterval);
-          sdkPollInterval = null;
-        }
-      }
-    }, 100);
-
-    sdkTimeout = window.setTimeout(() => {
-      if (cancelled) {
-        return;
-      }
-
-      if (sdkPollInterval !== null) {
-        window.clearInterval(sdkPollInterval);
-        sdkPollInterval = null;
-      }
-
-      if (!window.google?.accounts?.id) {
-        setGoogleAuthError("Google sign-in SDK did not finish loading. Disable blockers/privacy shields and reload.");
-        setGoogleButtonVisible(false);
-      } else if (!tryRenderGoogleButton()) {
-        setGoogleAuthError("Google button did not render. Check OAuth Authorized JavaScript origins for this exact URL.");
-        setGoogleButtonVisible(false);
-      }
-    }, 5000);
-
-    return () => {
-      cancelled = true;
-      if (sdkPollInterval !== null) {
-        window.clearInterval(sdkPollInterval);
-      }
-      if (sdkTimeout !== null) {
-        window.clearTimeout(sdkTimeout);
-      }
-    };
-  }, [authUser]);
 
   useEffect(() => {
     if (!authUser) {
@@ -594,8 +447,33 @@ export function App() {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    if (!isFirebaseAuthConfigured()) {
+      setGoogleAuthError("Firebase Google sign-in is not configured for this environment.");
+      return;
+    }
+
+    setAuthSubmitting(true);
+    setAuthError(null);
+    setAuthInfo(null);
+    setGoogleAuthError(null);
+
+    try {
+      const idToken = await signInWithGoogleFirebase();
+      const result = await loginWithGoogle({ idToken });
+      setAuthUser(result.user);
+    } catch (caughtError) {
+      const message = caughtError instanceof Error ? caughtError.message : "Google sign-in failed.";
+      setGoogleAuthError(message);
+      setAuthError(message);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
   const handleLogout = () => {
     clearAuthToken();
+    void signOutFromFirebase();
     setAuthUser(null);
     setAnalysis(null);
     setNodeDetails(null);
@@ -624,10 +502,19 @@ export function App() {
           <h1>{authMode === "register" ? "Create your workspace account" : "Sign in to RepoGraph"}</h1>
 
           <div className="auth-google-wrap">
-            <div ref={googleButtonRef} />
+            <button
+              type="button"
+              className="auth-google-button"
+              onClick={() => {
+                void handleGoogleSignIn();
+              }}
+              disabled={authSubmitting || !isFirebaseAuthConfigured()}
+            >
+              {authSubmitting ? "Connecting..." : "Continue with Google"}
+            </button>
           </div>
-          {!googleButtonVisible && !googleAuthError && (
-            <p className="auth-info">Preparing Google sign-in...</p>
+          {!isFirebaseAuthConfigured() && (
+            <p className="auth-info">Firebase Google sign-in is not configured for this environment.</p>
           )}
           {googleAuthError && <p className="auth-error">{googleAuthError}</p>}
 

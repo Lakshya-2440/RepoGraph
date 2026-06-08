@@ -99,6 +99,28 @@ input {
   justify-content: center;
 }
 
+.auth-google-button {
+  width: min(320px, 100%);
+  min-height: 44px;
+  border: 1px solid rgba(16, 33, 49, 0.18);
+  border-radius: 999px;
+  background: #fff;
+  color: #142033;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-google-button:hover:not(:disabled) {
+  border-color: rgba(16, 33, 49, 0.34);
+  box-shadow: 0 8px 24px rgba(16, 33, 49, 0.12);
+}
+
+.auth-google-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .auth-divider {
   display: grid;
   grid-template-columns: 1fr auto 1fr;

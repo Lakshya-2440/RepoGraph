@@ -34,7 +34,7 @@ export function validateProductionEnvironment(): void {
     return;
   }
 
-  const required = ["DATABASE_URL", "JWT_SECRET", "CORS_ORIGIN", "APP_BASE_URL"];
+  const required = ["DATABASE_URL", "JWT_SECRET", "CORS_ORIGIN", "APP_BASE_URL", "FIREBASE_PROJECT_ID"];
   const missing = required.filter((key) => !process.env[key]?.trim());
   if (missing.length > 0) {
     throw new Error(`Missing required production environment variables: ${missing.join(", ")}`);

@@ -175,6 +175,7 @@ Create local env files from templates:
 - `JWT_SECRET` (minimum 32 chars in production)
 - `CORS_ORIGIN`
 - `APP_BASE_URL` (must be `https://` in production)
+- `FIREBASE_PROJECT_ID`
 
 ### Common backend env
 
@@ -182,9 +183,8 @@ Create local env files from templates:
 - `JWT_EXPIRES_IN`
 - `JWT_ISSUER` (optional, default `repograph-auth`)
 - `JWT_AUDIENCE` (optional, default `repograph-client`)
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_IDS`
-- `GOOGLE_AUTH_STRICT_AUDIENCE`
+- `FIREBASE_PROJECT_IDS` (optional, comma-separated allowed project ids)
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (optional Admin SDK service account JSON)
 - `GITHUB_TOKEN` (optional, improves GitHub API limits)
 - `OPENROUTER_API_KEY` (required for AI features)
 - `OPENROUTER_MODEL` (optional, default `minimax/minimax-m2.5:free`)
@@ -201,6 +201,12 @@ Create local env files from templates:
 
 ### Frontend env
 
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_API_BASE` (optional; omit when the backend serves the frontend on the same origin, such as the Render web service)
+
 ## Scripts
 
 | Command | What it does |
@@ -213,11 +219,6 @@ Create local env files from templates:
 | `npm run build:frontend` | Builds frontend assets into `frontend/dist` |
 | `npm run start` | Starts production backend (`backend/dist/index.js`) |
 | `npm run typecheck` | Typechecks backend + frontend TS projects |
-
-- `VITE_API_BASE`
-	- Required in hosted deployments
-	- Usually not required in local dev because Vite proxies `/api` to `http://localhost:4000`
-- `VITE_GOOGLE_CLIENT_ID`
 
 ## Local development
 

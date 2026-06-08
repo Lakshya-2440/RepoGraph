@@ -2,7 +2,8 @@ import bcrypt from "bcryptjs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
 import type { Request, Response, NextFunction } from "express";
-import { OAuth2Client } from "google-auth-library";
+import { cert, getApps, initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 
 import type { AuthUser } from "../../shared/src/index.js";
 import { loadEnvironment } from "./config/env.js";
@@ -43,14 +44,12 @@ interface AttemptRow {
   locked_until: string | null;
 }
 
-let googleClient: OAuth2Client | null = null;
-
-function getAllowedGoogleClientIds(): string[] {
+function getAllowedFirebaseProjectIds(): string[] {
   loadEnvironment(true);
 
   const values = [
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_IDS
+    process.env.FIREBASE_PROJECT_ID,
+    process.env.FIREBASE_PROJECT_IDS
   ]
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .flatMap((value) => value.split(","))
@@ -60,8 +59,35 @@ function getAllowedGoogleClientIds(): string[] {
   return Array.from(new Set(values));
 }
 
-function isGoogleAudienceStrict(): boolean {
-  return (process.env.GOOGLE_AUTH_STRICT_AUDIENCE ?? "").trim().toLowerCase() === "true";
+function getFirebaseProjectId(): string | undefined {
+  return getAllowedFirebaseProjectIds()[0];
+}
+
+function getFirebaseServiceAccount(): Record<string, unknown> | undefined {
+  loadEnvironment(true);
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(raw.replace(/\\n/g, "\n")) as Record<string, unknown>;
+  } catch {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON.");
+  }
+}
+
+function ensureFirebaseAdmin(): void {
+  if (getApps().length > 0) {
+    return;
+  }
+
+  const projectId = getFirebaseProjectId();
+  const serviceAccount = getFirebaseServiceAccount();
+  initializeApp({
+    projectId,
+    credential: serviceAccount ? cert(serviceAccount) : undefined
+  });
 }
 
 export async function registerUser(emailRaw: string, password: string): Promise<void> {
@@ -543,71 +569,26 @@ async function createAndDispatchAuthToken(options: {
 
 async function verifyGoogleIdToken(idToken: string): Promise<string> {
   let normalizedIdToken = idToken.trim();
-  if (normalizedIdToken.startsWith("credential=")) {
-    normalizedIdToken = normalizedIdToken.slice("credential=".length).trim();
-  }
   normalizedIdToken = normalizedIdToken.replace(/^['"]|['"]$/g, "").trim();
 
   if (!normalizedIdToken || normalizedIdToken.length < 20 || normalizedIdToken.length > 5000) {
-    throw new Error("Invalid Google credential token.");
+    throw new Error("Invalid Firebase ID token.");
   }
 
-  const allowedClientIds = getAllowedGoogleClientIds();
-
-  if (!googleClient) {
-    googleClient = new OAuth2Client();
-  }
-
-  let ticket;
-  if (allowedClientIds.length > 0) {
-    try {
-      // Verify against configured audiences first for the strongest guarantee.
-      ticket = await googleClient.verifyIdToken({
-        idToken: normalizedIdToken,
-        audience: allowedClientIds
-      });
-    } catch (error) {
-      if (isGoogleAudienceStrict()) {
-        throw new Error("Google token audience is not allowed for this backend.");
-      }
-
-      // Compatibility fallback for production misconfiguration:
-      // still verify signature/claims, then perform permissive audience handling below.
-      logSecurityEvent("google_auth_audience_verify_failed_fallback", {
-        allowedClientIds,
-        reason: error instanceof Error ? error.message : "unknown_verify_error"
-      });
-      ticket = await googleClient.verifyIdToken({ idToken: normalizedIdToken });
-    }
-  } else {
-    // No configured audience: verify cryptographic claims only.
-    ticket = await googleClient.verifyIdToken({ idToken: normalizedIdToken });
-  }
-
-  const payload = ticket.getPayload();
-  const email = payload?.email?.trim().toLowerCase();
-  const emailVerified = payload?.email_verified === true;
+  ensureFirebaseAdmin();
+  const decoded = await getAuth().verifyIdToken(normalizedIdToken);
+  const email = decoded.email?.trim().toLowerCase();
+  const emailVerified = decoded.email_verified === true;
   if (!email || !emailVerified) {
-    throw new Error("Google account email is missing or unverified.");
+    throw new Error("Firebase account email is missing or unverified.");
   }
 
-  const aud = typeof payload?.aud === "string" ? payload.aud : undefined;
-  const azp = typeof payload?.azp === "string" ? payload.azp : undefined;
-  const audienceMatches =
-    allowedClientIds.length === 0 ||
-    (typeof aud === "string" && allowedClientIds.includes(aud)) ||
-    (typeof azp === "string" && allowedClientIds.includes(azp));
+  const allowedProjectIds = getAllowedFirebaseProjectIds();
+  const tokenProjectId = typeof decoded.aud === "string" ? decoded.aud : undefined;
+  const projectMatches = allowedProjectIds.length === 0 || (tokenProjectId ? allowedProjectIds.includes(tokenProjectId) : false);
 
-  if (!audienceMatches) {
-    if (isGoogleAudienceStrict()) {
-      throw new Error("Google token audience is not allowed for this backend.");
-    }
-
-    logSecurityEvent("google_auth_audience_mismatch_permitted", {
-      aud,
-      azp,
-      allowedClientIds
-    });
+  if (!projectMatches) {
+    throw new Error("Firebase token project is not allowed for this backend.");
   }
 
   return email;
